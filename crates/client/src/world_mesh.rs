@@ -341,7 +341,6 @@ pub fn world_material(
 #[derive(Clone)]
 pub struct SharedHandles {
     pub lightmap: Handle<Image>,
-    pub prop_lights: Handle<bevy::render::storage::ShaderBuffer>,
 }
 
 /// Shared VMT → [`WorldMaterial`] translation for world and props.
@@ -364,7 +363,6 @@ pub fn material_from_vmt(
         base2: textures.white.clone(),
         lightmap: shared.lightmap.clone(),
         modulate: textures.black.clone(),
-        prop_lights: shared.prop_lights.clone(),
         alpha_mode: AlphaMode::Opaque,
         cull: true,
     };

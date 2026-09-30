@@ -18,7 +18,6 @@ use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
-use bevy::render::storage::ShaderBuffer;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use bevy::window::{PresentMode, WindowResolution};
 use material::WorldMaterial;
@@ -82,8 +81,9 @@ impl Plugin for CsgoPlugin {
             .add_systems(Startup, (spawn_level, hud::setup))
             .add_systems(
                 Update,
-                (player::grab_cursor, player::look, player::update_camera, hud::update).chain(),
+                (player::grab_cursor, player::look, player::update_camera).chain(),
             )
+            .add_systems(Update, hud::update.run_if(|| std::env::var_os("CSR_NO_HUD").is_none()))
             .add_systems(FixedUpdate, player::tick);
     }
 }
@@ -107,7 +107,12 @@ pub fn run(opts: ClientOptions) -> i32 {
                 primary_window: Some(Window {
                     title: format!("CSGO Rewrite — {}", opts.map),
                     resolution: WindowResolution::new(opts.width, opts.height),
-                    present_mode: PresentMode::AutoNoVsync,
+                    present_mode: match std::env::var("CSR_PRESENT").as_deref() {
+                        Ok("immediate") => PresentMode::Immediate,
+                        Ok("mailbox") => PresentMode::Mailbox,
+                        Ok("fifo") => PresentMode::Fifo,
+                        _ => PresentMode::AutoNoVsync,
+                    },
                     ..default()
                 }),
                 ..default()
@@ -121,7 +126,13 @@ pub fn run(opts: ClientOptions) -> i32 {
     .insert_resource(player::InputEnabled(opts.screenshot.is_none()))
     .add_plugins(CsgoPlugin);
     if opts.screenshot.is_some() {
-        app.add_systems(Update, smoke_test);
+        // Automated runs never have focus; don't let the unfocused 60 Hz
+        // throttle skew frame-rate readings.
+        app.insert_resource(bevy::winit::WinitSettings {
+            focused_mode: bevy::winit::UpdateMode::Continuous,
+            unfocused_mode: bevy::winit::UpdateMode::Continuous,
+        })
+        .add_systems(Update, smoke_test);
     }
     match app.run() {
         AppExit::Success => 0,
@@ -137,7 +148,6 @@ fn spawn_level(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<WorldMaterial>>,
     mut images: ResMut<Assets<Image>>,
-    mut buffers: ResMut<Assets<ShaderBuffer>>,
 ) {
     let Some(level) = pending.0.lock().unwrap().take() else { return };
     let opts = &options.0;
@@ -156,7 +166,6 @@ fn spawn_level(
     drop(atlas);
     let world_shared = world_mesh::SharedHandles {
         lightmap: lightmap.clone(),
-        prop_lights: buffers.add(ShaderBuffer::from(vec![material::PropLight::default()])),
     };
     let mut world_draws = 0;
     let mut world_materials: std::collections::HashMap<String, Handle<WorldMaterial>> = Default::default();
@@ -183,25 +192,28 @@ fn spawn_level(
     let t_world = t.elapsed().as_secs_f32();
 
     let sun = props::Sun::from_bsp(&level.bsp);
-    let prop_stats = props::spawn(
+    let skip_props = std::env::var_os("CSR_NO_PROPS").is_some();
+    let prop_stats = if skip_props {
+        props::PropStats { instances: 0, draws: 0, materials: 0, failed_models: 0, sky_draws: 0, triangles: 0 }
+    } else { props::spawn(
         &mut commands,
         &level,
         &level.collision,
         &mut meshes,
         &mut materials,
         &mut images,
-        &mut buffers,
         &mut textures,
-        &lightmap,
+        &world_shared,
         opts.exposure,
         sun,
         sky,
-    );
+    ) };
     info!(
-        "world: {} tris ({} in 3D skybox) in {world_draws} batches ({t_world:.2}s); props: {} instances, {} draws ({} in 3D skybox), {} materials, {} failed models; textures: {} compressed, {} decoded, {} missing ({:.2}s total); sun {:?}; sky {:?}",
+        "world: {} tris ({} in 3D skybox) in {world_draws} batches ({t_world:.2}s); props: {} instances, {} tris, {} draws ({} in 3D skybox), {} materials, {} failed models; textures: {} compressed, {} decoded, {} missing ({:.2}s total); sun {:?}; sky {:?}",
         main.triangles + skybox.triangles,
         skybox.triangles,
         prop_stats.instances,
+        prop_stats.triangles,
         prop_stats.draws,
         prop_stats.sky_draws,
         prop_stats.materials,
@@ -289,11 +301,21 @@ fn smoke_test(
     options: Res<Options>,
     mut commands: Commands,
     mut exit: MessageWriter<AppExit>,
+    diagnostics: Res<bevy::diagnostic::DiagnosticsStore>,
 ) {
     *frame += 1;
     let opts = &options.0;
     let Some(path) = &opts.screenshot else { return };
     if *frame == opts.frames {
+        let fps = diagnostics
+            .get(&FrameTimeDiagnosticsPlugin::FPS)
+            .and_then(|d| d.average())
+            .unwrap_or(0.0);
+        let ms = diagnostics
+            .get(&FrameTimeDiagnosticsPlugin::FRAME_TIME)
+            .and_then(|d| d.average())
+            .unwrap_or(0.0);
+        info!("smoke test: {fps:.1} fps average ({ms:.2} ms/frame) at frame {}", *frame);
         commands
             .spawn(Screenshot::primary_window())
             .observe(save_to_disk(path.clone()));

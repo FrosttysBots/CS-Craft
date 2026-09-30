@@ -13,7 +13,6 @@ use bevy::reflect::TypePath;
 use bevy::render::render_resource::{
     AsBindGroup, Face, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
 };
-use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 
 pub const SHADER_PATH: &str = "embedded://client/shaders/world.wgsl";
@@ -25,7 +24,7 @@ pub mod flags {
     pub const LIGHTMAPPED: u32 = 1 << 2;
     pub const UNLIT: u32 = 1 << 3;
     pub const BLEND_MODULATE: u32 = 1 << 4;
-    /// Lit by the ambient cube and sun (props).
+    /// Lighting baked into vertex colours (static props).
     pub const VERTEX_LIT: u32 = 1 << 5;
     pub const TRANSLUCENT: u32 = 1 << 6;
     /// Use the base texture's alpha as blend weight (`$basealphaenvmapmask` etc. ignored).
@@ -54,27 +53,6 @@ impl Default for WorldParams {
     }
 }
 
-/// Lighting for one prop instance, indexed in the shader by the entity's
-/// `MeshTag`. Keeping it out of the material lets every instance of a model
-/// share one material, so Bevy can batch and instance them.
-#[derive(Clone, Copy, Debug, ShaderType)]
-pub struct PropLight {
-    /// +X, -X, +Y, -Y, +Z, -Z (Bevy axes).
-    pub ambient_cube: [Vec4; 6],
-    /// xyz: direction towards the sun (Bevy axes); w: 1 if the sun reaches the prop.
-    pub sun_dir: Vec4,
-    pub sun_color: Vec4,
-}
-
-impl Default for PropLight {
-    fn default() -> Self {
-        Self {
-            ambient_cube: [Vec4::splat(0.5); 6],
-            sun_dir: Vec4::new(0.0, 1.0, 0.0, 0.0),
-            sun_color: Vec4::ZERO,
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct WorldMaterialKey {
@@ -99,9 +77,6 @@ pub struct WorldMaterial {
     #[texture(7)]
     #[sampler(8)]
     pub modulate: Handle<Image>,
-    /// Per-instance prop lighting (shared by all materials).
-    #[storage(9, read_only)]
-    pub prop_lights: Handle<ShaderBuffer>,
     pub alpha_mode: AlphaMode,
     pub cull: bool,
 }

@@ -24,3 +24,4 @@ movement.workspace = true
 sim.workspace = true
 level.workspace = true
 client.workspace = true
+weapons.workspace = true

@@ -6,7 +6,6 @@
 //   color = rgb: vertex tint, a: WorldVertexTransition blend weight
 
 #import bevy_pbr::forward_io::VertexOutput
-#import bevy_pbr::mesh_functions::get_tag
 
 struct WorldParams {
     color: vec4<f32>,
@@ -16,11 +15,6 @@ struct WorldParams {
     lightmap_scale: f32,
 };
 
-struct PropLight {
-    ambient_cube: array<vec4<f32>, 6>,
-    sun_dir: vec4<f32>,
-    sun_color: vec4<f32>,
-};
 
 const ALPHA_TEST: u32 = 1u;
 const BLEND: u32 = 2u;
@@ -39,16 +33,6 @@ const TRANSLUCENT: u32 = 64u;
 @group(#{MATERIAL_BIND_GROUP}) @binding(6) var light_samp: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(7) var mod_tex: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(8) var mod_samp: sampler;
-@group(#{MATERIAL_BIND_GROUP}) @binding(9) var<storage, read> prop_lights: array<PropLight>;
-
-fn ambient_light(pl: PropLight, n: vec3<f32>) -> vec3<f32> {
-    let n2 = n * n;
-    var c = vec3<f32>(0.0);
-    c += n2.x * select(pl.ambient_cube[1].rgb, pl.ambient_cube[0].rgb, n.x >= 0.0);
-    c += n2.y * select(pl.ambient_cube[3].rgb, pl.ambient_cube[2].rgb, n.y >= 0.0);
-    c += n2.z * select(pl.ambient_cube[5].rgb, pl.ambient_cube[4].rgb, n.z >= 0.0);
-    return c;
-}
 
 // Extended Reinhard on luminance: keeps shade readable and rolls sunlit
 // highlights off towards a white point, preserving hue.
@@ -102,19 +86,14 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         light = textureSample(light_tex, light_samp, in.uv_b).rgb * params.lightmap_scale;
 #endif
     } else if (params.flags & VERTEX_LIT) != 0u {
-        let count = arrayLength(&prop_lights);
-        let index = min(get_tag(in.instance_index), count - 1u);
-        let pl = prop_lights[index];
-        let n = normalize(in.world_normal);
-        light = ambient_light(pl, n);
-        let ndl = max(dot(n, pl.sun_dir.xyz), 0.0);
-        light += pl.sun_color.rgb * ndl * pl.sun_dir.w;
+        // Static props: per-vertex lighting baked at load time.
+        light = vcolor.rgb;
     }
     if (params.flags & UNLIT) != 0u {
         light = vec3<f32>(1.0);
     }
 
-    var rgb = albedo.rgb * light * vcolor.rgb;
+    var rgb = albedo.rgb * light;
     if (params.flags & UNLIT) == 0u {
         rgb = tonemap(rgb * params.exposure);
     }
