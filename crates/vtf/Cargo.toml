@@ -1,0 +1,10 @@
+[package]
+name = "vtf"
+description = "Valve Texture Format (VTF 7.0-7.5) reader and decoder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+bcdec_rs.workspace = true

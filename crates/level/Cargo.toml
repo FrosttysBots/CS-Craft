@@ -1,0 +1,14 @@
+[package]
+name = "level"
+description = "Loads a map: file system, BSP, pakfile, collision"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+glam.workspace = true
+vfs.workspace = true
+bsp.workspace = true
+mdl.workspace = true
+collision.workspace = true

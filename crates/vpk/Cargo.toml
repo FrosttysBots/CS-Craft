@@ -1,0 +1,9 @@
+[package]
+name = "vpk"
+description = "Valve VPK (v1/v2) archive reader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]

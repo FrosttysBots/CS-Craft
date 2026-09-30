@@ -1,0 +1,9 @@
+[package]
+name = "kv"
+description = "KeyValues (VDF) text parser for Source engine data files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]

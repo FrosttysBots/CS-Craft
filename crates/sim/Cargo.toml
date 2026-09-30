@@ -1,0 +1,13 @@
+[package]
+name = "sim"
+description = "Deterministic fixed-tick game simulation (server, prediction and replay share it)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+glam.workspace = true
+collision.workspace = true
+movement.workspace = true
+bsp.workspace = true

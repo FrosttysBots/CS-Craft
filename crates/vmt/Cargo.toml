@@ -1,0 +1,10 @@
+[package]
+name = "vmt"
+description = "Valve Material Type (.vmt) reader with patch resolution"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+kv.workspace = true

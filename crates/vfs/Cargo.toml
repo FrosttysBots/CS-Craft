@@ -1,0 +1,13 @@
+[package]
+name = "vfs"
+description = "Search-path file system over loose files, VPKs and BSP pakfiles"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+kv.workspace = true
+vpk.workspace = true
+lzma-rs.workspace = true
+miniz_oxide = "0.8"

@@ -1,0 +1,10 @@
+[package]
+name = "mdl"
+description = "Source studio model reader (.mdl, .vvd, .vtx, .phy)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+glam.workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "movement"
+description = "CS:GO-style player movement (clean-room, from documented behaviour)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+glam.workspace = true
+collision.workspace = true

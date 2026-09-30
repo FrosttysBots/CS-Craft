@@ -1,0 +1,77 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/kv",
+    "crates/vpk",
+    "crates/vfs",
+    "crates/bsp",
+    "crates/vtf",
+    "crates/vmt",
+    "crates/mdl",
+    "crates/collision",
+    "crates/movement",
+    "crates/sim",
+    "crates/level",
+    "crates/launcher",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Mr. Claude (Anthropic's Claude)"]
+repository = "https://github.com/"
+
+[workspace.dependencies]
+# Kept on the same versions as COD-Legacy-Mashup (IW4L) so the two runtimes can
+# share one Bevy app when the games are stitched together.
+bevy = { version = "0.19", default-features = false, features = [
+    "bevy_window",
+    "bevy_winit",
+    "bevy_ui",
+    "bevy_ui_render",
+    "bevy_text",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_pbr",
+    "bevy_log",
+    "bevy_asset",
+    "multi_threaded",
+    "default_font",
+    "png",
+] }
+glam = "0.32.1"
+zip = { version = "6", default-features = false, features = ["deflate"] }
+lzma-rs = "0.3"
+bcdec_rs = "0.2"
+
+content = { path = "crates/content" }
+kv = { path = "crates/kv" }
+vpk = { path = "crates/vpk" }
+vfs = { path = "crates/vfs" }
+bsp = { path = "crates/bsp" }
+vtf = { path = "crates/vtf" }
+vmt = { path = "crates/vmt" }
+mdl = { path = "crates/mdl" }
+collision = { path = "crates/collision" }
+movement = { path = "crates/movement" }
+sim = { path = "crates/sim" }
+level = { path = "crates/level" }
+weapons = { path = "crates/weapons" }
+client = { path = "crates/client" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# Day-to-day playable build: optimised, fast to link.
+[profile.play]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+
+[profile.release]
+lto = "thin"
