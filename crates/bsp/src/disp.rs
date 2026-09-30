@@ -92,9 +92,9 @@ pub fn build(bsp: &Bsp, face_index: usize) -> Option<DispMesh> {
         }
     }
 
-    // Orientation reference: the face plane normal, flipped for back sides.
-    let plane = bsp.planes.get(face.plane as usize)?;
-    let front = if face.side != 0 { -plane.normal } else { plane.normal };
+    // Orientation reference: the face's plane normal. It already points the
+    // way the face looks; `side` only relates the face to its BSP node.
+    let front = bsp.face_normal(face)?;
 
     let mut indices = Vec::with_capacity((n - 1) * (n - 1) * 6);
     let mut push_tri = |i0: usize, i1: usize, i2: usize, base: &[Vec3]| {

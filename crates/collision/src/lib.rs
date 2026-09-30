@@ -152,6 +152,11 @@ impl CollisionWorld {
         self.surfaces.get(id as usize).map_or("", String::as_str)
     }
 
+    /// True for skybox brushes (sunlight and sky traces pass "through" them).
+    pub fn is_sky(&self, id: u32) -> bool {
+        self.surface_name(id).contains("skybox")
+    }
+
     /// Adds a convex solid. Shapes with non-finite or absurd bounds are
     /// dropped (returns false) so one bad input cannot poison the grid.
     pub fn add_convex(&mut self, c: Convex) -> bool {
@@ -259,30 +264,61 @@ impl CollisionWorld {
         let e = end + offset;
         let mut tr = Trace::empty(end);
 
-        let sweep_min = s.min(e) - ext - Vec3::ONE;
-        let sweep_max = s.max(e) + ext + Vec3::ONE;
+        // Long sweeps are split into short segments walked in order, so a
+        // bullet or shadow ray only visits the grid cells it passes and can
+        // stop at the first segment that contains a hit.
+        let length = (e - s).length();
+        let segments = ((length / (GRID_CELL * 2.0)).ceil() as usize).clamp(1, 1024);
         let mut cands = Vec::with_capacity(64);
-        self.candidates(sweep_min, sweep_max, &mut cands);
         let mut scratch = Vec::with_capacity(32);
-        for shape in cands {
-            match shape {
-                Shape::Convex(i) => {
-                    let c = &self.convexes[i as usize];
-                    if c.contents & mask == 0 || !overlaps(c.mins, c.maxs, sweep_min, sweep_max) {
+        let mut seen: std::collections::HashSet<(u8, u32)> = std::collections::HashSet::new();
+        for seg in 0..segments {
+            let f0 = seg as f32 / segments as f32;
+            let f1 = (seg + 1) as f32 / segments as f32;
+            let a = s.lerp(e, f0);
+            let b = s.lerp(e, f1);
+            let sweep_min = a.min(b) - ext - Vec3::ONE;
+            let sweep_max = a.max(b) + ext + Vec3::ONE;
+            self.candidates(sweep_min, sweep_max, &mut cands);
+            for &shape in &cands {
+                if segments > 1 {
+                    let key = match shape {
+                        Shape::Convex(i) => (0u8, i),
+                        Shape::Triangle(i) => (1u8, i),
+                    };
+                    if !seen.insert(key) {
                         continue;
                     }
-                    clip_convex(&c.planes, s, e, ext, c.contents, c.surface, &mut tr);
                 }
-                Shape::Triangle(i) => {
-                    let t = &self.triangles[i as usize];
-                    if t.contents & mask == 0 || !overlaps(t.mins, t.maxs, sweep_min, sweep_max) {
-                        continue;
+                match shape {
+                    Shape::Convex(i) => {
+                        let c = &self.convexes[i as usize];
+                        if c.contents & mask == 0 || !overlaps(c.mins, c.maxs, sweep_min, sweep_max) {
+                            if segments > 1 {
+                                seen.remove(&(0, i));
+                            }
+                            continue;
+                        }
+                        clip_convex(&c.planes, s, e, ext, c.contents, c.surface, &mut tr);
                     }
-                    triangle_planes(t, &mut scratch);
-                    clip_convex(&scratch, s, e, ext, t.contents, t.surface, &mut tr);
+                    Shape::Triangle(i) => {
+                        let t = &self.triangles[i as usize];
+                        if t.contents & mask == 0 || !overlaps(t.mins, t.maxs, sweep_min, sweep_max) {
+                            if segments > 1 {
+                                seen.remove(&(1, i));
+                            }
+                            continue;
+                        }
+                        triangle_planes(t, &mut scratch);
+                        clip_convex(&scratch, s, e, ext, t.contents, t.surface, &mut tr);
+                    }
+                }
+                if tr.all_solid {
+                    break;
                 }
             }
-            if tr.all_solid {
+            // Anything later in the sweep cannot beat a hit inside this segment.
+            if tr.all_solid || tr.fraction <= f1 {
                 break;
             }
         }
@@ -766,5 +802,38 @@ mod tests {
         w.finalize();
         let tr = w.trace_ray(Vec3::new(10.0, 10.0, 100.0), Vec3::new(10.0, 10.0, -10.0), contents::MASK_SOLID);
         assert!((tr.end.z - 44.0).abs() < 0.2, "end {:?}", tr.end);
+    }
+}
+
+#[cfg(test)]
+mod long_trace_tests {
+    use super::*;
+
+    #[test]
+    fn long_ray_hits_far_wall_and_near_wall_first() {
+        let mut w = CollisionWorld::new();
+        let wall = |x0: f32| Convex {
+            planes: vec![
+                Plane { normal: Vec3::X, dist: x0 + 16.0 },
+                Plane { normal: -Vec3::X, dist: -x0 },
+                Plane { normal: Vec3::Y, dist: 512.0 },
+                Plane { normal: -Vec3::Y, dist: 512.0 },
+                Plane { normal: Vec3::Z, dist: 512.0 },
+                Plane { normal: -Vec3::Z, dist: 512.0 },
+            ],
+            mins: Vec3::new(x0, -512.0, -512.0),
+            maxs: Vec3::new(x0 + 16.0, 512.0, 512.0),
+            contents: contents::SOLID,
+            surface: 0,
+        };
+        w.add_convex(wall(3000.0));
+        w.add_convex(wall(9000.0));
+        w.finalize();
+        let tr = w.trace_ray(Vec3::ZERO, Vec3::new(12000.0, 0.0, 0.0), contents::MASK_SOLID);
+        assert!((tr.end.x - 3000.0).abs() < 0.1, "{:?}", tr.end);
+        let tr = w.trace_ray(Vec3::new(3100.0, 0.0, 0.0), Vec3::new(12000.0, 0.0, 0.0), contents::MASK_SOLID);
+        assert!((tr.end.x - 9000.0).abs() < 0.1, "{:?}", tr.end);
+        let tr = w.trace_ray(Vec3::new(12000.0, 0.0, 0.0), Vec3::new(3100.0, 0.0, 0.0), contents::MASK_SOLID);
+        assert!((tr.end.x - 9016.0).abs() < 0.1, "{:?}", tr.end);
     }
 }

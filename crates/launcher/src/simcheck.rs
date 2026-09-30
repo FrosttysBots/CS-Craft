@@ -32,7 +32,7 @@ pub fn run(map: &str) -> i32 {
     let ct_id = world.add_player("counter-terrorist", Team::CounterTerrorist);
 
     let mut failures = 0;
-    let mut step = |world: &mut World, inputs: &[(PlayerId, TickInput)], ticks: usize| {
+    let step = |world: &mut World, inputs: &[(PlayerId, TickInput)], ticks: usize| {
         for _ in 0..ticks {
             world.step(inputs);
         }

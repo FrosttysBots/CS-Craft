@@ -44,7 +44,11 @@ pub mod lumps {
     pub const TEXDATA_STRING_DATA: usize = 43;
     pub const TEXDATA_STRING_TABLE: usize = 44;
     pub const DISP_TRIS: usize = 48;
+    pub const LEAF_AMBIENT_INDEX_HDR: usize = 51;
+    pub const LEAF_AMBIENT_INDEX: usize = 52;
     pub const LIGHTING_HDR: usize = 53;
+    pub const LEAF_AMBIENT_LIGHTING_HDR: usize = 55;
+    pub const LEAF_AMBIENT_LIGHTING: usize = 56;
     pub const FACES_HDR: usize = 58;
 }
 
@@ -150,6 +154,9 @@ pub struct Face {
 pub struct Leaf {
     pub contents: i32,
     pub cluster: i16,
+    /// Area index (areas are sealed regions joined by areaportals; the 3D
+    /// skybox is its own area).
+    pub area: u16,
     pub mins: [i16; 3],
     pub maxs: [i16; 3],
     pub first_leaf_face: u16,
@@ -208,6 +215,15 @@ pub struct DispVert {
     pub alpha: f32,
 }
 
+/// One ambient light sample inside a leaf: six directional colours
+/// (+X, -X, +Y, -Y, +Z, -Z in Source axes) at a position given as 0..255
+/// fractions of the leaf's bounds.
+#[derive(Clone, Copy, Debug)]
+pub struct AmbientSample {
+    pub cube: [[f32; 3]; 6],
+    pub pos: [u8; 3],
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Cubemap {
     pub origin: [i32; 3],
@@ -244,6 +260,9 @@ pub struct Bsp {
     pub disp_verts: Vec<DispVert>,
     pub disp_tris: Vec<u16>,
     pub cubemaps: Vec<Cubemap>,
+    /// Per leaf: (sample count, first sample) into `leaf_ambient`.
+    pub leaf_ambient_index: Vec<(u16, u16)>,
+    pub leaf_ambient: Vec<AmbientSample>,
     /// The embedded ZIP of map-specific files.
     pub pakfile: Vec<u8>,
     pub static_props: StaticProps,
@@ -354,6 +373,7 @@ impl Bsp {
         bsp.leafs = lump::records(&get(lumps::LEAFS)?, leaf_stride, |r| Leaf {
             contents: r.i32(0),
             cluster: r.i16(4),
+            area: r.u16(6) & 0x1FF,
             mins: [r.i16(8), r.i16(10), r.i16(12)],
             maxs: [r.i16(14), r.i16(16), r.i16(18)],
             first_leaf_face: r.u16(20),
@@ -407,6 +427,19 @@ impl Bsp {
             origin: [r.i32(0), r.i32(4), r.i32(8)],
             size: r.i32(12),
         });
+        let (index_lump, sample_lump) = if header.lumps[lumps::LEAF_AMBIENT_LIGHTING_HDR].length > 0 {
+            (lumps::LEAF_AMBIENT_INDEX_HDR, lumps::LEAF_AMBIENT_LIGHTING_HDR)
+        } else {
+            (lumps::LEAF_AMBIENT_INDEX, lumps::LEAF_AMBIENT_LIGHTING)
+        };
+        bsp.leaf_ambient_index = lump::records(&get(index_lump)?, 4, |r| (r.u16(0), r.u16(2)));
+        bsp.leaf_ambient = lump::records(&get(sample_lump)?, 28, |r| AmbientSample {
+            cube: std::array::from_fn(|i| {
+                let o = i * 4;
+                decode_rgbexp(r.u8(o), r.u8(o + 1), r.u8(o + 2), r.u8(o + 3) as i8)
+            }),
+            pos: [r.u8(24), r.u8(25), r.u8(26)],
+        });
         bsp.pakfile = get(lumps::PAKFILE)?;
         bsp.static_props = staticprops::parse(file, &get(lumps::GAME_LUMP)?)?;
         Ok(bsp)
@@ -446,6 +479,13 @@ impl Bsp {
         out
     }
 
+    /// The direction a face looks. This is its plane's normal as stored:
+    /// face vertices wind clockwise around it for both values of `side`
+    /// (verified against CS:GO maps; `side` only refers to the BSP node).
+    pub fn face_normal(&self, face: &Face) -> Option<Vec3> {
+        self.planes.get(face.plane as usize).map(|p| p.normal)
+    }
+
     /// Luxel grid size (width, height) of a face's lightmap, or `None` if unlit.
     pub fn lightmap_dims(&self, face: &Face) -> Option<(usize, usize)> {
         if face.light_offset < 0 || face.styles[0] == 255 {
@@ -480,6 +520,63 @@ impl Bsp {
         disp::build(self, face_index)
     }
 
+    /// Ambient light cube at a point, blended from the samples in its leaf
+    /// by inverse squared distance. `None` if the map has no samples there.
+    pub fn ambient_cube(&self, point: Vec3) -> Option<[[f32; 3]; 6]> {
+        let leaf_index = self.point_leaf(point);
+        let leaf = self.leafs.get(leaf_index)?;
+        let &(count, first) = self.leaf_ambient_index.get(leaf_index)?;
+        if count == 0 {
+            return None;
+        }
+        let mins = Vec3::new(leaf.mins[0] as f32, leaf.mins[1] as f32, leaf.mins[2] as f32);
+        let maxs = Vec3::new(leaf.maxs[0] as f32, leaf.maxs[1] as f32, leaf.maxs[2] as f32);
+        let mut total = [[0.0f32; 3]; 6];
+        let mut weight_sum = 0.0;
+        for s in self.leaf_ambient.get(first as usize..first as usize + count as usize)? {
+            let p = mins + (maxs - mins) * Vec3::new(s.pos[0] as f32, s.pos[1] as f32, s.pos[2] as f32) / 255.0;
+            let w = 1.0 / (p.distance_squared(point) + 1.0);
+            for (t, c) in total.iter_mut().zip(s.cube.iter()) {
+                for k in 0..3 {
+                    t[k] += c[k] * w;
+                }
+            }
+            weight_sum += w;
+        }
+        for t in &mut total {
+            for v in t.iter_mut() {
+                *v /= weight_sum;
+            }
+        }
+        Some(total)
+    }
+
+    /// The map's 3D skybox: `sky_camera` origin, scale, and its area.
+    pub fn sky_camera(&self) -> Option<SkyCamera> {
+        let ent = self.entities_of_class("sky_camera").next()?;
+        let origin = ent.str("origin").and_then(parse_origin)?;
+        let scale = ent.f32("scale").filter(|s| *s > 0.0).unwrap_or(16.0);
+        let area = self.leafs.get(self.point_leaf(origin))?.area;
+        Some(SkyCamera { origin, scale, area })
+    }
+
+    /// Area of the leaf containing a point.
+    pub fn point_area(&self, point: Vec3) -> u16 {
+        self.leafs.get(self.point_leaf(point)).map_or(0, |l| l.area)
+    }
+
+    /// Faces referenced by leaves of the given area.
+    pub fn faces_in_area(&self, area: u16) -> std::collections::HashSet<usize> {
+        let mut out = std::collections::HashSet::new();
+        for leaf in self.leafs.iter().filter(|l| l.area == area) {
+            let first = leaf.first_leaf_face as usize;
+            for &f in self.leaf_faces.get(first..first + leaf.num_leaf_faces as usize).unwrap_or(&[]) {
+                out.insert(f as usize);
+            }
+        }
+        out
+    }
+
     /// Which leaf contains a point (Source axes).
     pub fn point_leaf(&self, point: Vec3) -> usize {
         let mut node = self.models.first().map_or(0, |m| m.head_node);
@@ -491,6 +588,15 @@ impl Bsp {
         }
         (-1 - node) as usize
     }
+}
+
+/// The 3D skybox camera: geometry in `area` is drawn around the player at
+/// `scale`× size, as if seen from `origin`.
+#[derive(Clone, Copy, Debug)]
+pub struct SkyCamera {
+    pub origin: Vec3,
+    pub scale: f32,
+    pub area: u16,
 }
 
 /// `ColorRGBExp32` → linear float colour (0..1 is the LDR range).
@@ -516,5 +622,28 @@ mod tests {
         assert!((c[0] - 256.0 / 255.0).abs() < 1e-6);
         let c = decode_rgbexp(64, 0, 0, -2);
         assert!((c[0] - 16.0 / 255.0).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod orientation_tests {
+    /// Faces wind clockwise around their stored plane normal (Newell's
+    /// normal points the opposite way) regardless of `side`.
+    #[test]
+    fn face_winding_matches_plane_normal() {
+        use glam::Vec3;
+        // A 12-unit thick wall: the -Y face at y=-360 and the +Y face at y=-348,
+        // wound clockwise as seen from outside.
+        let outside_minus_y = [Vec3::new(-368.0, -360.0, 128.0), Vec3::new(-368.0, -360.0, 112.0), Vec3::new(-512.0, -360.0, 112.0), Vec3::new(-512.0, -360.0, 128.0)];
+        let newell = |v: &[Vec3]| {
+            let mut n = Vec3::ZERO;
+            for i in 0..v.len() {
+                let (a, b) = (v[i], v[(i + 1) % v.len()]);
+                n += Vec3::new((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y));
+            }
+            n.normalize()
+        };
+        // Clockwise seen from -Y means Newell's (CCW) normal points +Y.
+        assert!((newell(&outside_minus_y) - Vec3::Y).length() < 1e-5);
     }
 }

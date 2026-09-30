@@ -42,9 +42,6 @@ impl<'a> R<'a> {
     fn i16(&self, o: usize) -> io::Result<i16> {
         self.u16(o).map(|v| v as i16)
     }
-    fn u8(&self, o: usize) -> io::Result<u8> {
-        self.0.get(o).copied().ok_or_else(|| invalid(format!("read past end at {o}")))
-    }
     fn f32(&self, o: usize) -> io::Result<f32> {
         self.i32(o).map(|v| f32::from_bits(v as u32))
     }

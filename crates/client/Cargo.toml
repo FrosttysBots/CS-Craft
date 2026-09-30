@@ -1,0 +1,21 @@
+[package]
+name = "client"
+description = "Bevy renderer, input and HUD for CSGO Rewrite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+bevy.workspace = true
+glam.workspace = true
+kv.workspace = true
+vfs.workspace = true
+bsp.workspace = true
+vtf.workspace = true
+vmt.workspace = true
+mdl.workspace = true
+collision.workspace = true
+movement.workspace = true
+sim.workspace = true
+level.workspace = true

@@ -1,0 +1,9 @@
+[package]
+name = "content"
+description = "Game-agnostic content identity: GameOrigin and stable ContentId (for multi-game stitching)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]

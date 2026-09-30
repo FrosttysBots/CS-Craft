@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/content",
+    "crates/weapons",
     "crates/kv",
     "crates/vpk",
     "crates/vfs",
@@ -12,6 +14,7 @@ members = [
     "crates/movement",
     "crates/sim",
     "crates/level",
+    "crates/client",
     "crates/launcher",
 ]
 
