@@ -15,7 +15,12 @@
   - `cargo run --release -p launcher -- probe de_dust2` (expects `failures: 0`)
   - `cargo run --release -p launcher -- sim de_dust2` (expects `failures: 0`)
   - for visual changes: `csr play de_dust2 --screenshot shot.png --camera x y z pitch yaw`,
-    then look at the image
+    then look at the image. The smoke test logs average FPS. Debug env vars:
+    `CSR_WATCH_BOT=n` (camera on bot n), `CSR_AUTOFIRE=1` (hold fire),
+    `CSR_NO_PROPS`, `CSR_NO_HUD`, `CSR_NO_CULL=world|props|all`,
+    `CSR_PRESENT=immediate|mailbox|fifo`
+  - audio: `cargo run -p launcher --example soundcheck` decodes every weapon sound
+    through the same checks as the game (Bevy panics on undecodable audio)
 - **Bevy APIs:** read the 0.19 sources in `~/.cargo/registry/src/*/bevy_*-0.19.*`
   before using an API. Do not write them from memory.
 - **Editing files with non-ASCII** (`×`, `µ`, `—`): Python's default encoding on

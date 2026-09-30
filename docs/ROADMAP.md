@@ -11,7 +11,8 @@ lightmaps, props and sun, HUD, and the weapon catalog.
 
 ## M2 — Look like CS:GO
 
-- [ ] Skybox (2D `skyname` cubemap) and the 3D skybox (`sky_camera`, 1/16 scale)
+- [x] 3D skybox (`sky_camera`, drawn by a second camera at 16x)
+- [ ] 2D skybox cube faces (currently the sky's average colour)
 - [ ] Overlays and decals (`info_overlay`)
 - [ ] Detail props (grass and bushes from `detail.vbsp`)
 - [ ] Static prop vertex lighting from the pakfile's `sp_hdr_*.vhv` (replaces the ambient-cube approximation)
@@ -23,11 +24,13 @@ lightmaps, props and sun, HUD, and the weapon catalog.
 ## M3 — Shoot
 
 - [ ] Viewmodels: MDL skeletal animation (bones, sequences, anim blocks)
-- [ ] Weapon state machine from `WeaponDefinition` (fire rate, reload, deploy)
-- [ ] CS:GO spread, inaccuracy and seeded recoil patterns
-- [ ] Bullet traces with penetration (`penetration`, surface props) and range falloff
-- [ ] Damage, armor ratio, hitgroups from the player model's hitboxes
-- [ ] Sounds: `game_sounds_*.txt` soundscripts and WAV/MP3 playback
+- [x] Weapon state machine from `WeaponDefinition` (fire rate, ammo, reload, deploy)
+- [x] CS:GO inaccuracy model and a seeded per-weapon recoil pattern (tuning pending)
+- [x] Range falloff, armor ratio, hit groups (hull-height approximation)
+- [ ] Wall penetration (`penetration`, surface props)
+- [ ] Hit groups from the character models' hitboxes
+- [x] Sounds: soundscripts and WAV/MP3 playback (weapons)
+- [ ] Footsteps, impacts, reload sounds
 
 ## M4 — Play a round
 
@@ -41,6 +44,7 @@ lightmaps, props and sun, HUD, and the weapon catalog.
 - [ ] Server-authoritative netcode over UDP: input commands up, snapshot deltas down
 - [ ] Client prediction and reconciliation (reuses `sim::World::step`)
 - [ ] Lag compensation for hit registration
+- [x] First-pass bots (wander, react, aim, burst fire)
 - [ ] Bots using the map's `.nav` meshes
 
 ## M6 — Stitch

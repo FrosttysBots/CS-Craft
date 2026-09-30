@@ -11,6 +11,10 @@ pub struct Level {
     pub vfs: vfs::Vfs,
     pub bsp: bsp::Bsp,
     pub collision: Arc<CollisionWorld>,
+    /// Weapon catalog from `scripts/items/items_game.txt`.
+    pub catalog: Arc<weapons::Catalog>,
+    /// Navigation mesh from `maps/<name>.nav`, if the map ships one.
+    pub nav: Option<Arc<nav::NavMesh>>,
     pub timings: Vec<(&'static str, f32)>,
 }
 
@@ -71,12 +75,26 @@ impl Level {
         let collision = CollisionWorld::from_bsp(&bsp, &MapCollisionOptions::default(), &loader);
         timings.push(("collision", t.elapsed().as_secs_f32()));
 
+        let t = Instant::now();
+        let catalog = fs
+            .read_string("scripts/items/items_game.txt")
+            .and_then(|text| weapons::Catalog::from_items_game(&text).ok())
+            .unwrap_or_default();
+        timings.push(("weapons", t.elapsed().as_secs_f32()));
+
+        let nav = fs
+            .read(&format!("maps/{name}.nav"))
+            .and_then(|bytes| nav::NavMesh::parse(&bytes).ok())
+            .map(Arc::new);
+
         Ok(Level {
             name: name.to_string(),
             game_dir,
             vfs: fs,
             bsp,
             collision: Arc::new(collision),
+            catalog: Arc::new(catalog),
+            nav,
             timings,
         })
     }

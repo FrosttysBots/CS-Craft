@@ -4,7 +4,10 @@
 //! [`CsgoPlugin`] is self-contained so the whole game can be added to
 //! another Bevy app (the planned multi-game "stitch").
 
+pub mod audio;
+pub mod characters;
 pub mod coords;
+pub mod effects;
 pub mod hud;
 pub mod material;
 pub mod player;
@@ -26,6 +29,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 
+const BOT_NAMES_T: [&str; 8] = ["Albert", "Crusher", "Dragomir", "Gunner", "Kasper", "Minh", "Rock", "Vitaliy"];
+const BOT_NAMES_CT: [&str; 8] = ["Brian", "Darryl", "Elliot", "Frank", "Harold", "Jon", "Pete", "Walt"];
+
 /// CS:GO's default 90° horizontal FOV at 4:3, as a vertical angle.
 pub const VERTICAL_FOV_DEG: f32 = 73.74;
 
@@ -40,6 +46,8 @@ pub struct ClientOptions {
     pub exposure: f32,
     pub width: u32,
     pub height: u32,
+    /// Enemy bots; the local team gets one fewer so teams are even.
+    pub bots: u32,
 }
 
 impl Default for ClientOptions {
@@ -52,6 +60,7 @@ impl Default for ClientOptions {
             exposure: 2.0,
             width: 1600,
             height: 900,
+            bots: 5,
         }
     }
 }
@@ -81,9 +90,22 @@ impl Plugin for CsgoPlugin {
             .add_systems(Startup, (spawn_level, hud::setup))
             .add_systems(
                 Update,
-                (player::grab_cursor, player::look, player::update_camera).chain(),
+                (player::look, player::grab_cursor, player::update_camera).chain(),
             )
-            .add_systems(Update, hud::update.run_if(|| std::env::var_os("CSR_NO_HUD").is_none()))
+            .init_resource::<effects::PendingEvents>()
+            .init_resource::<effects::Effects>()
+            .init_resource::<player::BotBrains>()
+            .add_systems(
+                Update,
+                (
+                    effects::process,
+                    effects::draw,
+                    characters::sync,
+                    hud::update.run_if(|| std::env::var_os("CSR_NO_HUD").is_none()),
+                )
+                    .chain()
+                    .after(player::update_camera),
+            )
             .add_systems(FixedUpdate, player::tick);
     }
 }
@@ -226,10 +248,37 @@ fn spawn_level(
         sky
     );
 
-    // Simulation with one local player.
-    let mut world = sim::World::new(level.collision.clone());
+    // Characters and sounds.
+    let character_models = characters::load(
+        &level.vfs,
+        &mut meshes,
+        &mut materials,
+        &mut images,
+        &mut textures,
+        &world_shared,
+        opts.exposure,
+    );
+    let sounds = audio::SoundLibrary::load(&level.vfs);
+    info!(
+        "characters: T {} parts, CT {} parts; {} sound entries; {} weapons",
+        character_models.terrorist.len(),
+        character_models.counter_terrorist.len(),
+        sounds.len(),
+        level.catalog.weapons.len()
+    );
+    commands.insert_resource(character_models);
+    commands.insert_resource(sounds);
+
+    // Simulation: the local player on CT, bots on both teams.
+    let mut world = sim::World::with_catalog(level.collision.clone(), level.catalog.clone());
     world.load_spawns(&level.bsp);
-    let id = world.add_player("player", sim::Team::CounterTerrorist);
+    let id = world.add_player("You", sim::Team::CounterTerrorist);
+    for i in 0..opts.bots {
+        world.add_bot(&format!("{}", BOT_NAMES_T[i as usize % BOT_NAMES_T.len()]), sim::Team::Terrorist);
+    }
+    for i in 0..opts.bots.saturating_sub(1) {
+        world.add_bot(&format!("{}", BOT_NAMES_CT[i as usize % BOT_NAMES_CT.len()]), sim::Team::CounterTerrorist);
+    }
     let p = world.player(id).expect("player just added");
     let eye = p.movement.eye_position();
     let mut local = LocalPlayer {
@@ -242,6 +291,7 @@ fn spawn_level(
         prev_eye: eye,
         curr_eye: eye,
         latched: 0,
+        pending_slot: 0,
     };
     if let Some((pos, pitch, yaw)) = opts.camera {
         local.noclip = true;
@@ -290,8 +340,10 @@ fn spawn_level(
         Tonemapping::None,
         start,
         PlayerCamera,
+        bevy::audio::SpatialListener::new(16.0 / 39.37),
     ));
     commands.insert_resource(local);
+    commands.insert_resource(player::BotBrains(sim::bots::Bots::with_skill(0.6).with_nav(level.nav.clone())));
     commands.insert_resource(SimWorld(world));
     commands.insert_resource(LoadedLevel(level));
 }
@@ -302,10 +354,26 @@ fn smoke_test(
     mut commands: Commands,
     mut exit: MessageWriter<AppExit>,
     diagnostics: Res<bevy::diagnostic::DiagnosticsStore>,
+    world: Option<Res<SimWorld>>,
+    local: Option<ResMut<LocalPlayer>>,
 ) {
     *frame += 1;
     let opts = &options.0;
     let Some(path) = &opts.screenshot else { return };
+    // CSR_WATCH_BOT=n: park the camera 120 units in front of bot n, facing it.
+    if let (Some(world), Some(mut local), Ok(n)) = (world, local, std::env::var("CSR_WATCH_BOT").map(|v| v.parse::<usize>().unwrap_or(0))) {
+        if let Some(bot) = world.0.players.iter().filter(|p| p.is_bot && p.alive).nth(n) {
+            let (fwd, _, _) = movement::angle_vectors(glam::Vec3::new(0.0, bot.view_angles.y, 0.0));
+            let eye = bot.movement.origin + fwd * 120.0 + glam::Vec3::new(0.0, 0.0, 60.0);
+            let (pitch, yaw) = sim::bots::look_angles(eye, bot.movement.origin + glam::Vec3::new(0.0, 0.0, 40.0));
+            local.noclip = true;
+            local.noclip_pos = eye;
+            local.prev_eye = eye;
+            local.curr_eye = eye;
+            local.pitch = pitch;
+            local.yaw = yaw;
+        }
+    }
     if *frame == opts.frames {
         let fps = diagnostics
             .get(&FrameTimeDiagnosticsPlugin::FPS)

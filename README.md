@@ -15,7 +15,8 @@ the games can later be **stitched together** into one runtime. See
 
 ## Status
 
-Milestone 1 (load and walk a real map) works:
+You can load de_dust2 and play a 5v5 bot deathmatch with CS:GO movement and
+weapons:
 
 | Area | State |
 |---|---|
@@ -27,9 +28,13 @@ Milestone 1 (load and walk a real map) works:
 | Collision | ✅ swept-box traces against brushes, displacements and prop hulls |
 | Player movement | ✅ clean-room CS:GO movement: friction, accel, air-strafe, stairs, crouch-jump, stamina, bhop cap |
 | Simulation | ✅ deterministic fixed 64-tick `TickInput → step → Snapshot` |
-| Renderer | ✅ world plus lightmaps, WorldVertexTransition blends, props lit by ambient cube + sun |
+| Renderer | ✅ world plus lightmaps, WorldVertexTransition blends, batched props lit by ambient cube + sun, 3D skybox (≈120 fps on an RTX 3070 laptop GPU) |
 | Weapon catalog | ✅ `items_game.txt` → typed `WeaponDefinition`s (prefab inheritance) |
-| Shooting, rounds, economy, bots, netcode, sound, viewmodels | ⏳ see [docs/ROADMAP.md](docs/ROADMAP.md) |
+| Shooting | ✅ fire rate, ammo, reloads, CS:GO inaccuracy model, seeded recoil pattern, range falloff, armor, hit groups (damage matches CS:GO: AK 111 helmet HS, 27 armored body) |
+| Bots | ✅ wander, react, aim and burst-fire through the same sim rules as players |
+| Sound | ✅ soundscripts + weapon sounds from the VPK, spatial |
+| Characters | ⚠️ real T/CT models in reference pose (no skeletal animation yet) |
+| Rounds, economy, bomb, grenades, viewmodels, netcode, nav-mesh bots | ⏳ see [docs/ROADMAP.md](docs/ROADMAP.md) |
 
 ## What you need
 
@@ -54,6 +59,9 @@ cargo run --profile play -p launcher -- play de_dust2
 | Space | Jump |
 | Ctrl | Crouch |
 | Shift | Walk |
+| Left mouse | Fire |
+| R | Reload |
+| 1 / 2 / 3, wheel | Rifle / pistol / knife |
 | V | Toggle noclip |
 
 Other commands:
@@ -64,8 +72,9 @@ cargo run --release -p launcher -- sim de_dust2     # headless movement test on 
 cargo test --workspace                              # unit tests
 ```
 
-`csr play` also takes `--screenshot out.png`, `--camera x y z pitch yaw`,
-`--exposure f` and `--size w h` for automated visual checks.
+`csr play` also takes `--bots n`, `--screenshot out.png`,
+`--camera x y z pitch yaw`, `--exposure f` and `--size w h`.
+`csr weapons` prints the weapon catalog read from your install.
 
 ## Layout
 

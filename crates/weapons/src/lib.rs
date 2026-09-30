@@ -87,6 +87,8 @@ pub struct WeaponDefinition {
     pub recoil: Recoil,
     pub view_model: String,
     pub world_model: String,
+    /// Soundscript entry for a shot, e.g. `Weapon_AK47.Single`.
+    pub fire_sound: String,
     pub kill_award: i32,
     /// Every resolved attribute, for anything not lifted into a field.
     pub attributes: HashMap<String, String>,
@@ -196,6 +198,12 @@ fn resolve(item: &Block, prefabs: &HashMap<String, &Block>) -> Resolved {
                                 out.attributes.insert(ak.to_ascii_lowercase(), val);
                             }
                         }
+                    } else if key == "visuals" {
+                        for (vk, vv) in child.iter() {
+                            if let Some(v) = vv.as_str() {
+                                out.fields.insert(format!("visuals/{}", vk.to_ascii_lowercase()), v.to_string());
+                            }
+                        }
                     } else if key == "used_by_classes" {
                         out.used_by = child.iter().map(|(k, _)| k.to_ascii_lowercase()).collect();
                     }
@@ -275,6 +283,7 @@ fn build(index: &str, class_name: &str, r: &Resolved) -> WeaponDefinition {
         },
         view_model: f("model_player"),
         world_model: f("model_world"),
+        fire_sound: f("visuals/sound_single_shot"),
         kill_award: ai("kill award").unwrap_or(300),
         attributes: r.attributes.clone(),
     }

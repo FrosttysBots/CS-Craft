@@ -12,3 +12,5 @@ vfs.workspace = true
 bsp.workspace = true
 mdl.workspace = true
 collision.workspace = true
+weapons.workspace = true
+nav.workspace = true

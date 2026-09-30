@@ -25,3 +25,6 @@ sim.workspace = true
 level.workspace = true
 client.workspace = true
 weapons.workspace = true
+
+[dev-dependencies]
+rodio = { version = "0.22", default-features = false, features = ["hound", "mp3"] }

@@ -12,6 +12,7 @@ members = [
     "crates/mdl",
     "crates/collision",
     "crates/movement",
+    "crates/nav",
     "crates/sim",
     "crates/level",
     "crates/client",
@@ -42,6 +43,11 @@ bevy = { version = "0.19", default-features = false, features = [
     "multi_threaded",
     "default_font",
     "png",
+    "bevy_gizmos",
+    "bevy_gizmos_render",
+    "bevy_audio",
+    "wav",
+    "mp3",
 ] }
 glam = "0.32.1"
 zip = { version = "6", default-features = false, features = ["deflate"] }
@@ -59,6 +65,7 @@ mdl = { path = "crates/mdl" }
 collision = { path = "crates/collision" }
 movement = { path = "crates/movement" }
 sim = { path = "crates/sim" }
+nav = { path = "crates/nav" }
 level = { path = "crates/level" }
 weapons = { path = "crates/weapons" }
 client = { path = "crates/client" }

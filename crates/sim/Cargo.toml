@@ -11,3 +11,8 @@ glam.workspace = true
 collision.workspace = true
 movement.workspace = true
 bsp.workspace = true
+weapons.workspace = true
+nav.workspace = true
+
+[dev-dependencies]
+content.workspace = true

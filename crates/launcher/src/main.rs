@@ -7,6 +7,7 @@
 //!     --camera x y z pitch yaw start in noclip at a Source position
 //!     --exposure <f>           brightness multiplier (2.0)
 //!     --size <w> <h>           window size (1600 900)
+//!     --bots <n>               enemy bots, teammates get n-1 (5)
 //! csr sim [map]                headless movement run on a real map
 //! csr probe [map]              load every asset a map references and report
 //! csr weapons                  print the weapon catalog from items_game.txt
@@ -110,6 +111,10 @@ fn parse_play(map: &str, args: &[String]) -> Result<client::ClientOptions, Strin
             }
             "--exposure" => {
                 opts.exposure = num(args.get(i + 1), "--exposure")?;
+                i += 1;
+            }
+            "--bots" => {
+                opts.bots = num(args.get(i + 1), "--bots")? as u32;
                 i += 1;
             }
             "--size" => {

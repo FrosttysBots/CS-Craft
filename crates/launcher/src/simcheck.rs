@@ -1,12 +1,15 @@
-//! `csr sim <map>`: headless movement run against the real map collision.
+//! `csr sim <map>`: headless checks against the real map.
 //!
-//! Spawns one player per team, then drives scripted inputs and checks that
-//! players stay on the map (never fall through the world or get stuck in
-//! solids). Exits non-zero on failure.
+//! 1. Movement: players spawn on the ground, run in eight directions without
+//!    falling out of the world or sticking in solids, and jump ~57 units.
+//! 2. Combat: a 5v5 bot deathmatch runs for a minute of game time; bots
+//!    must move, fire, hit and kill with the real weapon stats.
+//!
+//! Exits non-zero on failure.
 
 use glam::Vec3;
 use movement::buttons;
-use sim::{PlayerId, Team, TickInput, World, TICK_DT, TICK_RATE};
+use sim::{bots::Bots, GameEvent, PlayerId, Team, TickInput, World, TICK_DT, TICK_RATE};
 use std::time::Instant;
 
 pub fn run(map: &str) -> i32 {
@@ -19,9 +22,16 @@ pub fn run(map: &str) -> i32 {
         }
     };
     println!("loaded {map} in {:.2}s {:?}", t.elapsed().as_secs_f32(), level.timings);
-    let floor_z = level.collision.mins.z;
+    println!("weapon catalog: {} weapons", level.catalog.weapons.len());
+    let mut failures = movement_checks(&level);
+    failures += combat_check(&level);
+    println!("failures: {failures}");
+    if failures == 0 { 0 } else { 1 }
+}
 
-    let mut world = World::new(level.collision.clone());
+fn movement_checks(level: &level::Level) -> i32 {
+    let floor_z = level.collision.mins.z;
+    let mut world = World::with_catalog(level.collision.clone(), level.catalog.clone());
     world.load_spawns(&level.bsp);
     println!("spawns: {}", world.spawns.len());
     if world.spawns.is_empty() {
@@ -38,13 +48,15 @@ pub fn run(map: &str) -> i32 {
         }
     };
 
-    // Settle.
     step(&mut world, &[], TICK_RATE as usize / 2);
     for id in [t_id, ct_id] {
         let p = world.player(id).unwrap();
         println!(
-            "{}: spawned at {:.1?} on_ground={} yaw={:.0}",
-            p.name, p.movement.origin, p.movement.on_ground, p.view_angles.y
+            "{}: spawned at {:.1?} on_ground={} weapon={:?}",
+            p.name,
+            p.movement.origin,
+            p.movement.on_ground,
+            p.active_weapon().map(|w| w.def.class_name.clone())
         );
         if !p.movement.on_ground {
             println!("  FAIL: not standing on ground after settling");
@@ -52,7 +64,6 @@ pub fn run(map: &str) -> i32 {
         }
     }
 
-    // Run forward in eight directions for two seconds each, starting from spawn.
     let t_sim = Instant::now();
     let mut ticks = 0usize;
     for id in [t_id, ct_id] {
@@ -64,7 +75,7 @@ pub fn run(map: &str) -> i32 {
             let input = TickInput {
                 view_angles: Vec3::new(0.0, yaw, 0.0),
                 forward_move: 450.0,
-                weapon_max_speed: 250.0,
+                weapon_slot: 3, // knife: 250 u/s
                 ..Default::default()
             };
             let mut max_speed: f32 = 0.0;
@@ -102,13 +113,11 @@ pub fn run(map: &str) -> i32 {
         }
     }
 
-    // Jump in place.
     world.respawn(t_id);
     step(&mut world, &[], 8);
     let base_z = world.player(t_id).unwrap().movement.origin.z;
     let jump = TickInput {
         buttons: buttons::JUMP,
-        weapon_max_speed: 250.0,
         ..Default::default()
     };
     world.step(&[(t_id, jump)]);
@@ -125,12 +134,79 @@ pub fn run(map: &str) -> i32 {
         println!("  FAIL: expected ~57u jump and a landing");
         failures += 1;
     }
-
     let per_tick = t_sim.elapsed().as_secs_f64() / ticks.max(1) as f64 * 1e6;
+    println!("movement: {ticks} player-ticks at {per_tick:.1} µs/tick");
+    failures
+}
+
+fn combat_check(level: &level::Level) -> i32 {
+    if level.catalog.weapons.is_empty() {
+        println!("combat: FAIL no weapon catalog");
+        return 1;
+    }
+    let mut world = World::with_catalog(level.collision.clone(), level.catalog.clone());
+    world.load_spawns(&level.bsp);
+    for i in 0..5 {
+        world.add_bot(&format!("T bot {i}"), Team::Terrorist);
+        world.add_bot(&format!("CT bot {i}"), Team::CounterTerrorist);
+    }
+    let mut bots = Bots::with_skill(0.7).with_nav(level.nav.clone());
     println!(
-        "simulated {ticks} player-ticks ({:.1}s of game time) at {per_tick:.1} µs/tick",
-        ticks as f32 * TICK_DT
+        "nav mesh: {}",
+        level.nav.as_ref().map_or("none".to_string(), |n| format!("{} areas, {} places", n.areas.len(), n.places.len()))
     );
-    println!("failures: {failures}");
-    if failures == 0 { 0 } else { 1 }
+    let seconds = 60;
+    let t = Instant::now();
+    let (mut shots, mut hits, mut kills, mut headshots, mut impacts) = (0, 0, 0, 0, 0);
+    let mut distance = 0.0f32;
+    let mut last: Vec<Vec3> = world.players.iter().map(|p| p.movement.origin).collect();
+    for _ in 0..(TICK_RATE * seconds) {
+        let inputs = bots.think(&world);
+        world.step(&inputs);
+        for (i, p) in world.players.iter().enumerate() {
+            if p.alive {
+                let d = (p.movement.origin - last[i]).length();
+                if d < 64.0 {
+                    distance += d;
+                }
+            }
+            last[i] = p.movement.origin;
+        }
+        for e in &world.events {
+            match e {
+                GameEvent::Fire { .. } => shots += 1,
+                GameEvent::Damage { .. } => hits += 1,
+                GameEvent::Impact { .. } => impacts += 1,
+                GameEvent::Kill { headshot, .. } => {
+                    kills += 1;
+                    if *headshot {
+                        headshots += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let elapsed = t.elapsed().as_secs_f32();
+    let t_kills: u32 = world.players.iter().filter(|p| p.team == Team::Terrorist).map(|p| p.kills).sum();
+    let ct_kills: u32 = world.players.iter().filter(|p| p.team == Team::CounterTerrorist).map(|p| p.kills).sum();
+    println!(
+        "combat: 5v5 bots for {seconds}s game time in {elapsed:.2}s ({:.0}x real time)",
+        seconds as f32 / elapsed
+    );
+    println!(
+        "  bots walked {:.0}u total; {shots} shots, {impacts} wall impacts, {hits} hits, {kills} kills ({headshots} headshots); score T {t_kills} - CT {ct_kills}",
+        distance
+    );
+    let mut failures = 0;
+    if distance < 1000.0 {
+        println!("  FAIL: bots barely moved");
+        failures += 1;
+    }
+    if shots == 0 || hits == 0 || kills == 0 {
+        println!("  FAIL: expected shots, hits and kills");
+        failures += 1;
+    }
+    let _ = TICK_DT;
+    failures
 }
