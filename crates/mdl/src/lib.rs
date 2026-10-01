@@ -12,7 +12,9 @@
 //! returned in the model's bind pose, which is what static props need.
 //! Layouts follow public community documentation of the formats.
 
+pub mod anim;
 pub mod phy;
+pub mod skeleton;
 
 use glam::{Vec2, Vec3};
 use std::io;
@@ -24,9 +26,12 @@ fn invalid(msg: impl Into<String>) -> io::Error {
 }
 
 #[derive(Clone, Copy)]
-struct R<'a>(&'a [u8]);
+pub(crate) struct R<'a>(pub(crate) &'a [u8]);
 
 impl<'a> R<'a> {
+    fn u8(&self, o: usize) -> io::Result<u8> {
+        self.0.get(o).copied().ok_or_else(|| invalid(format!("read past end at {o}")))
+    }
     fn i32(&self, o: usize) -> io::Result<i32> {
         self.0
             .get(o..o + 4)
@@ -60,6 +65,10 @@ pub struct Vertex {
     pub position: Vec3,
     pub normal: Vec3,
     pub uv: Vec2,
+    /// Up to three influencing bones (model bone indices) and their weights.
+    pub bones: [u8; 3],
+    pub weights: [f32; 3],
+    pub bone_count: u8,
 }
 
 /// Triangles that share one material slot.
@@ -90,6 +99,21 @@ pub struct Model {
     pub skins: Vec<Vec<usize>>,
     /// LOD 0 meshes of the default body group (sub-model 0 of each body part).
     pub meshes: Vec<Mesh>,
+    pub bones: Vec<skeleton::Bone>,
+    pub hitboxes: Vec<skeleton::Hitbox>,
+    pub animations: Vec<anim::AnimDesc>,
+    pub sequences: Vec<anim::Sequence>,
+    /// Models whose animations this one includes (`$includemodel`).
+    pub include_models: Vec<String>,
+    /// Body parts: (name, sub-model names, chosen sub-model).
+    pub body_parts: Vec<(String, Vec<String>, usize)>,
+    /// Pose parameters (name, start, end) that sequences blend over.
+    pub pose_params: Vec<(String, f32, f32)>,
+    /// `.ani` file holding out-of-line animation blocks, if any.
+    pub anim_block_file: String,
+    pub anim_blocks: Vec<(u32, u32)>,
+    /// The .mdl bytes (animation data is decoded from them on demand).
+    pub raw: std::sync::Arc<Vec<u8>>,
 }
 
 impl Model {
@@ -127,7 +151,89 @@ impl Model {
     }
 
     /// Loads a model from its `.mdl`, `.vvd` and `.dx90.vtx` bytes.
+    /// Reads only the .mdl: skeleton, animations, sequences, textures (no
+    /// geometry). Used for animation-only models such as `$includemodel`s.
+    pub fn load_header(mdl: &[u8]) -> io::Result<Model> {
+        let m = R(mdl);
+        if mdl.get(0..4) != Some(b"IDST") {
+            return Err(invalid("not an MDL (bad id)"));
+        }
+        let mut model = Model {
+            name: m.cstr(12)?.chars().take(64).collect(),
+            version: m.i32(4)?,
+            hull_min: m.vec3(104)?,
+            hull_max: m.vec3(116)?,
+            flags: m.i32(152)?,
+            ..Default::default()
+        };
+        model.read_animation_data(mdl)?;
+        Ok(model)
+    }
+
+    fn read_animation_data(&mut self, mdl: &[u8]) -> io::Result<()> {
+        let m = R(mdl);
+        self.bones = skeleton::read_bones(&m, m.i32(156)?.max(0) as usize, m.i32(160)?.max(0) as usize)?;
+        self.hitboxes = skeleton::read_hitboxes(&m, m.i32(172)?.max(0) as usize, m.i32(176)?.max(0) as usize)
+            .unwrap_or_default();
+        self.animations = anim::read_anim_descs(&m, m.i32(180)?.max(0) as usize, m.i32(184)?.max(0) as usize)?;
+        self.sequences = anim::read_sequences(&m, m.i32(188)?.max(0) as usize, m.i32(192)?.max(0) as usize, self.bones.len())?;
+        let pp_count = m.i32(300)?.max(0) as usize;
+        let pp_index = m.i32(304)?.max(0) as usize;
+        for i in 0..pp_count {
+            let o = pp_index + i * 20;
+            let name = m.cstr((o as i64 + m.i32(o)? as i64) as usize)?;
+            self.pose_params.push((name, m.f32(o + 8)?, m.f32(o + 12)?));
+        }
+        let includes = m.i32(336)?.max(0) as usize;
+        let include_index = m.i32(340)?.max(0) as usize;
+        for i in 0..includes {
+            let o = include_index + i * 8;
+            let ofs = m.i32(o + 4)?;
+            self.include_models.push(m.cstr((o as i64 + ofs as i64) as usize)?);
+        }
+        let block_name = m.i32(348)?;
+        let blocks = m.i32(352)?.max(0) as usize;
+        let block_index = m.i32(356)?.max(0) as usize;
+        if blocks > 0 && block_name > 0 {
+            self.anim_block_file = m.cstr(block_name as usize)?;
+            for b in 0..blocks {
+                let o = block_index + b * 8;
+                self.anim_blocks.push((m.i32(o)?.max(0) as u32, m.i32(o + 4)?.max(0) as u32));
+            }
+        }
+        self.raw = std::sync::Arc::new(mdl.to_vec());
+        Ok(())
+    }
+
+    pub fn bone_index(&self, name: &str) -> Option<usize> {
+        self.bones.iter().position(|b| b.name.eq_ignore_ascii_case(name))
+    }
+
+    pub fn animation_index(&self, name: &str) -> Option<usize> {
+        self.animations.iter().position(|a| a.name.eq_ignore_ascii_case(name))
+    }
+
+    pub fn sequence(&self, name: &str) -> Option<&anim::Sequence> {
+        self.sequences.iter().find(|s| s.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Decodes animation `index` against this model's own skeleton.
+    pub fn decode_animation(&self, index: usize, ani: Option<&[u8]>) -> io::Result<anim::Clip> {
+        let desc = self
+            .animations
+            .get(index)
+            .ok_or_else(|| invalid(format!("no animation {index}")))?;
+        anim::decode_clip(&self.raw, ani, &self.anim_blocks, desc, &self.bones)
+    }
+
+    /// Loads a model with the default body groups (sub-model 0 of each part).
     pub fn load(mdl: &[u8], vvd: &[u8], vtx: &[u8]) -> io::Result<Model> {
+        Self::load_with_body(mdl, vvd, vtx, &|_, _| 0)
+    }
+
+    /// Loads a model choosing a sub-model per body part:
+    /// `choose_body(part_name, sub_model_names) -> index`.
+    pub fn load_with_body(mdl: &[u8], vvd: &[u8], vtx: &[u8], choose_body: &dyn Fn(&str, &[String]) -> usize) -> io::Result<Model> {
         let m = R(mdl);
         if mdl.get(0..4) != Some(b"IDST") {
             return Err(invalid("not an MDL (bad id)"));
@@ -194,15 +300,21 @@ impl Model {
             if num_models <= 0 {
                 continue;
             }
-            // Default body group: sub-model 0.
-            let sm_ofs = (bp_ofs as i64 + model_index as i64) as usize;
+            let part_name = m.cstr((bp_ofs as i64 + m.i32(bp_ofs)? as i64) as usize)?;
+            let first_sm = (bp_ofs as i64 + model_index as i64) as usize;
+            let sub_names: Vec<String> = (0..num_models as usize)
+                .map(|k| m.cstr(first_sm + k * 148).unwrap_or_default())
+                .collect();
+            let choice = choose_body(&part_name, &sub_names).min(num_models as usize - 1);
+            model.body_parts.push((part_name, sub_names, choice));
+            let sm_ofs = first_sm + choice * 148;
             let num_meshes = m.i32(sm_ofs + 72)?.max(0) as usize;
             let mesh_index = m.i32(sm_ofs + 76)?;
             let model_vertex_start = (m.i32(sm_ofs + 84)?.max(0) / 48) as usize;
 
             // Matching VTX body part → model → LOD 0.
             let vbp = vtx_body_ofs + bp * 8;
-            let v_model_ofs = vbp + vt.i32(vbp + 4)?.max(0) as usize;
+            let v_model_ofs = vbp + vt.i32(vbp + 4)?.max(0) as usize + choice * 8;
             let v_lod_ofs = v_model_ofs + vt.i32(v_model_ofs + 4)?.max(0) as usize;
             let v_num_meshes = vt.i32(v_lod_ofs)?.max(0) as usize;
             let v_mesh_ofs = v_lod_ofs + vt.i32(v_lod_ofs + 4)?.max(0) as usize;
@@ -248,6 +360,7 @@ impl Model {
                 }
             }
         }
+        model.read_animation_data(mdl)?;
         Ok(model)
     }
 }
@@ -268,6 +381,9 @@ fn read_vvd(vvd: &[u8]) -> io::Result<Vec<Vertex>> {
             position: r.vec3(o + 16)?,
             normal: r.vec3(o + 28)?,
             uv: Vec2::new(r.f32(o + 40)?, r.f32(o + 44)?),
+            weights: [r.f32(o)?, r.f32(o + 4)?, r.f32(o + 8)?],
+            bones: [vvd[o + 12], vvd[o + 13], vvd[o + 14]],
+            bone_count: vvd[o + 15],
         })
     };
     let mut out = Vec::with_capacity(num_lod0);

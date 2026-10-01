@@ -10,6 +10,7 @@ authors.workspace = true
 bevy.workspace = true
 glam.workspace = true
 kv.workspace = true
+weapons.workspace = true
 vfs.workspace = true
 bsp.workspace = true
 vtf.workspace = true

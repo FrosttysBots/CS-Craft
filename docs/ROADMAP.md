@@ -23,7 +23,7 @@ lightmaps, props and sun, HUD, and the weapon catalog.
 
 ## M3 — Shoot
 
-- [ ] Viewmodels: MDL skeletal animation (bones, sequences, anim blocks)
+- [x] Viewmodels: MDL skeletal animation (bones, sequences, anim blocks, frame anims)
 - [x] Weapon state machine from `WeaponDefinition` (fire rate, ammo, reload, deploy)
 - [x] CS:GO inaccuracy model and a seeded per-weapon recoil pattern (tuning pending)
 - [x] Range falloff, armor ratio, hit groups (hull-height approximation)
@@ -34,7 +34,8 @@ lightmaps, props and sun, HUD, and the weapon catalog.
 
 ## M4 — Play a round
 
-- [ ] Player models (T/CT) with the third-person animation state
+- [x] Player models (T/CT) with a simplified third-person animation state
+- [ ] Ragdoll/death animations, lean/strafe layers, aim yaw, foot IK
 - [ ] Rounds, freeze time, buy zones and buy menu, money
 - [ ] Bomb plant/defuse (`func_bomb_target`), win conditions
 - [ ] Grenades: HE, flash, smoke, molotov/incendiary, decoy

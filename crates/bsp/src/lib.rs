@@ -436,7 +436,7 @@ impl Bsp {
         bsp.leaf_ambient = lump::records(&get(sample_lump)?, 28, |r| AmbientSample {
             cube: std::array::from_fn(|i| {
                 let o = i * 4;
-                decode_rgbexp(r.u8(o), r.u8(o + 1), r.u8(o + 2), r.u8(o + 3) as i8)
+                decode_rgbexp(r.u8(o), r.u8(o + 1), r.u8(o + 2), r.u8(o + 3) as i8).map(|v| v * AMBIENT_SCALE)
             }),
             pos: [r.u8(24), r.u8(25), r.u8(26)],
         });
@@ -598,6 +598,13 @@ pub struct SkyCamera {
     pub scale: f32,
     pub area: u16,
 }
+
+/// Scale applied to leaf ambient samples so they share the lightmaps'
+/// brightness units. CS:GO maps store them about 2^7-2^8 times darker than
+/// lightmap luxels (measured median ratio 190-250x across de_dust2,
+/// de_inferno and de_mirage, the remainder being direct sunlight that
+/// models receive separately).
+pub const AMBIENT_SCALE: f32 = 128.0;
 
 /// `ColorRGBExp32` → linear float colour (0..1 is the LDR range).
 pub fn decode_rgbexp(r: u8, g: u8, b: u8, exp: i8) -> [f32; 3] {

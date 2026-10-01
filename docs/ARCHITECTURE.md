@@ -42,6 +42,20 @@ client (Bevy)
 5. **Verify on real data.** `csr probe` and `csr sim` run against the real
    install. Unit tests use synthetic data, so they pass without the game.
 
+## Animation
+
+* `mdl::anim` decodes both of the game's animation encodings: classic
+  per-bone RLE tracks (player animations) and CS:GO's frame animations
+  (weapons), whose "smallest three" `Quaternion48S` layout was recovered
+  from the data (see the doc comment on `quat48s`).
+* Clips are retargeted by bone name (`anim::retarget`), so animation-only
+  include models (`animset_t.mdl`, knife anim models) drive any skeleton.
+* Viewmodels keep a persistent pose that each sequence layers onto using
+  its per-bone weight list; bones an animation does not touch keep the
+  previous pose, as the game does.
+* `client::skinning` uploads skinned meshes and writes joint transforms;
+  `bone_merge` attaches arms to guns and guns to hands by bone name.
+
 ## Coordinate systems
 
 | | Source | Bevy |

@@ -8,6 +8,7 @@
 //!     --exposure <f>           brightness multiplier (2.0)
 //!     --size <w> <h>           window size (1600 900)
 //!     --bots <n>               enemy bots, teammates get n-1 (5)
+//!     --team <t|ct>            side to play (ct)
 //! csr sim [map]                headless movement run on a real map
 //! csr probe [map]              load every asset a map references and report
 //! csr weapons                  print the weapon catalog from items_game.txt
@@ -111,6 +112,10 @@ fn parse_play(map: &str, args: &[String]) -> Result<client::ClientOptions, Strin
             }
             "--exposure" => {
                 opts.exposure = num(args.get(i + 1), "--exposure")?;
+                i += 1;
+            }
+            "--team" => {
+                opts.terrorist = args.get(i + 1).is_some_and(|t| t.eq_ignore_ascii_case("t"));
                 i += 1;
             }
             "--bots" => {

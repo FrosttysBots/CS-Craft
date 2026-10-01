@@ -6,6 +6,9 @@
 
 pub mod audio;
 pub mod characters;
+pub mod player_anim;
+pub mod skinning;
+pub mod viewmodel;
 pub mod coords;
 pub mod effects;
 pub mod hud;
@@ -48,6 +51,8 @@ pub struct ClientOptions {
     pub height: u32,
     /// Enemy bots; the local team gets one fewer so teams are even.
     pub bots: u32,
+    /// Play as a Terrorist instead of a Counter-Terrorist.
+    pub terrorist: bool,
 }
 
 impl Default for ClientOptions {
@@ -61,6 +66,7 @@ impl Default for ClientOptions {
             width: 1600,
             height: 900,
             bots: 5,
+            terrorist: false,
         }
     }
 }
@@ -95,12 +101,15 @@ impl Plugin for CsgoPlugin {
             .init_resource::<effects::PendingEvents>()
             .init_resource::<effects::Effects>()
             .init_resource::<player::BotBrains>()
+            .init_resource::<characters::Characters>()
+            .init_resource::<viewmodel::ViewModelState>()
             .add_systems(
                 Update,
                 (
                     effects::process,
                     effects::draw,
                     characters::sync,
+                    viewmodel::update,
                     hud::update.run_if(|| std::env::var_os("CSR_NO_HUD").is_none()),
                 )
                     .chain()
@@ -170,6 +179,7 @@ fn spawn_level(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<WorldMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut bindposes: ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
 ) {
     let Some(level) = pending.0.lock().unwrap().take() else { return };
     let opts = &options.0;
@@ -249,35 +259,56 @@ fn spawn_level(
     );
 
     // Characters and sounds.
+    let t_chars = Instant::now();
     let character_models = characters::load(
-        &level.vfs,
+        &level,
         &mut meshes,
         &mut materials,
         &mut images,
         &mut textures,
         &world_shared,
+        &mut bindposes,
         opts.exposure,
     );
+    let view_models = viewmodel::load(
+        &level,
+        &mut meshes,
+        &mut materials,
+        &mut images,
+        &mut textures,
+        &world_shared,
+        &mut bindposes,
+        opts.exposure,
+    );
+    info!("characters and viewmodels loaded in {:.2}s", t_chars.elapsed().as_secs_f32());
     let sounds = audio::SoundLibrary::load(&level.vfs);
     info!(
-        "characters: T {} parts, CT {} parts; {} sound entries; {} weapons",
-        character_models.terrorist.len(),
-        character_models.counter_terrorist.len(),
+        "characters: T {}, CT {}, {} weapon world models; {} sound entries; {} weapons",
+        character_models.terrorist.is_some(),
+        character_models.counter_terrorist.is_some(),
+        character_models.weapons.len(),
         sounds.len(),
         level.catalog.weapons.len()
     );
     commands.insert_resource(character_models);
+    commands.insert_resource(view_models);
     commands.insert_resource(sounds);
 
     // Simulation: the local player on CT, bots on both teams.
     let mut world = sim::World::with_catalog(level.collision.clone(), level.catalog.clone());
     world.load_spawns(&level.bsp);
-    let id = world.add_player("You", sim::Team::CounterTerrorist);
+    let (mine, theirs) = if opts.terrorist {
+        (sim::Team::Terrorist, sim::Team::CounterTerrorist)
+    } else {
+        (sim::Team::CounterTerrorist, sim::Team::Terrorist)
+    };
+    let id = world.add_player("You", mine);
+    let names = |team: sim::Team| if team == sim::Team::Terrorist { &BOT_NAMES_T } else { &BOT_NAMES_CT };
     for i in 0..opts.bots {
-        world.add_bot(&format!("{}", BOT_NAMES_T[i as usize % BOT_NAMES_T.len()]), sim::Team::Terrorist);
+        world.add_bot(names(theirs)[i as usize % 8], theirs);
     }
     for i in 0..opts.bots.saturating_sub(1) {
-        world.add_bot(&format!("{}", BOT_NAMES_CT[i as usize % BOT_NAMES_CT.len()]), sim::Team::CounterTerrorist);
+        world.add_bot(names(mine)[i as usize % 8], mine);
     }
     let p = world.player(id).expect("player just added");
     let eye = p.movement.eye_position();
@@ -342,6 +373,25 @@ fn spawn_level(
         PlayerCamera,
         bevy::audio::SpatialListener::new(16.0 / 39.37),
     ));
+    // Viewmodel camera: drawn last with its own depth buffer and FOV.
+    commands.spawn((
+        Camera3d::default(),
+        Camera {
+            order: 2,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        Projection::Perspective(PerspectiveProjection {
+            fov: viewmodel::vertical_fov(viewmodel::VIEWMODEL_FOV),
+            near: 1.0,
+            far: 512.0,
+            ..default()
+        }),
+        Tonemapping::None,
+        start,
+        viewmodel::layer(),
+        PlayerCamera,
+    ));
     commands.insert_resource(local);
     commands.insert_resource(player::BotBrains(sim::bots::Bots::with_skill(0.6).with_nav(level.nav.clone())));
     commands.insert_resource(SimWorld(world));
@@ -360,11 +410,19 @@ fn smoke_test(
     *frame += 1;
     let opts = &options.0;
     let Some(path) = &opts.screenshot else { return };
+    let mut local = local;
+    // CSR_SLOT=n: switch to weapon slot n early in the run.
+    if *frame == 10 {
+        if let (Some(l), Ok(n)) = (local.as_mut(), std::env::var("CSR_SLOT").map(|v| v.parse::<u8>().unwrap_or(1))) {
+            l.pending_slot = n;
+        }
+    }
     // CSR_WATCH_BOT=n: park the camera 120 units in front of bot n, facing it.
     if let (Some(world), Some(mut local), Ok(n)) = (world, local, std::env::var("CSR_WATCH_BOT").map(|v| v.parse::<usize>().unwrap_or(0))) {
         if let Some(bot) = world.0.players.iter().filter(|p| p.is_bot && p.alive).nth(n) {
+            let dist = std::env::var("CSR_WATCH_DIST").ok().and_then(|v| v.parse().ok()).unwrap_or(120.0);
             let (fwd, _, _) = movement::angle_vectors(glam::Vec3::new(0.0, bot.view_angles.y, 0.0));
-            let eye = bot.movement.origin + fwd * 120.0 + glam::Vec3::new(0.0, 0.0, 60.0);
+            let eye = bot.movement.origin + fwd * dist + glam::Vec3::new(0.0, 0.0, 60.0);
             let (pitch, yaw) = sim::bots::look_angles(eye, bot.movement.origin + glam::Vec3::new(0.0, 0.0, 40.0));
             local.noclip = true;
             local.noclip_pos = eye;

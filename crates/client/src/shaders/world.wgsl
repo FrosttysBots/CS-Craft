@@ -13,6 +13,9 @@ struct WorldParams {
     alpha_ref: f32,
     exposure: f32,
     lightmap_scale: f32,
+    ambient_cube: array<vec4<f32>, 6>,
+    sun_dir: vec4<f32>,
+    sun_color: vec4<f32>,
 };
 
 
@@ -23,6 +26,16 @@ const UNLIT: u32 = 8u;
 const BLEND_MODULATE: u32 = 16u;
 const VERTEX_LIT: u32 = 32u;
 const TRANSLUCENT: u32 = 64u;
+const DYNAMIC_LIT: u32 = 256u;
+
+fn ambient_light(n: vec3<f32>) -> vec3<f32> {
+    let n2 = n * n;
+    var c = vec3<f32>(0.0);
+    c += n2.x * select(params.ambient_cube[1].rgb, params.ambient_cube[0].rgb, n.x >= 0.0);
+    c += n2.y * select(params.ambient_cube[3].rgb, params.ambient_cube[2].rgb, n.y >= 0.0);
+    c += n2.z * select(params.ambient_cube[5].rgb, params.ambient_cube[4].rgb, n.z >= 0.0);
+    return c;
+}
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> params: WorldParams;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var base_tex: texture_2d<f32>;
@@ -88,6 +101,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     } else if (params.flags & VERTEX_LIT) != 0u {
         // Static props: per-vertex lighting baked at load time.
         light = vcolor.rgb;
+    } else if (params.flags & DYNAMIC_LIT) != 0u {
+        let n = normalize(in.world_normal);
+        light = ambient_light(n) + params.sun_color.rgb * max(dot(n, params.sun_dir.xyz), 0.0) * params.sun_dir.w;
     }
     if (params.flags & UNLIT) != 0u {
         light = vec3<f32>(1.0);

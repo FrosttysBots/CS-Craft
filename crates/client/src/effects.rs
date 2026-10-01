@@ -27,6 +27,8 @@ pub struct Effects {
     pub kill_feed: Vec<KillFeedEntry>,
     /// Time of the local player's last hit on someone (hit marker).
     pub last_hit: f32,
+    /// Last time each player fired (drives fire animations).
+    pub last_fire: std::collections::HashMap<sim::PlayerId, f32>,
     pub last_hit_headshot: bool,
 }
 
@@ -50,6 +52,7 @@ pub fn process(
     for event in pending.0.drain(..) {
         match event {
             GameEvent::Fire { player, weapon, origin } => {
+                effects.last_fire.insert(player, now);
                 let sound = world.0.catalog.get(&weapon).map(|d| d.fire_sound.clone()).unwrap_or_default();
                 if !sound.is_empty() {
                     let at = if player == local.id && !local.noclip { None } else { Some(origin) };

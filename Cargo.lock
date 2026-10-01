@@ -1601,6 +1601,7 @@ dependencies = [
  "vfs",
  "vmt",
  "vtf",
+ "weapons",
 ]
 
 [[package]]

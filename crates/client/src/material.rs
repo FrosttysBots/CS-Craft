@@ -29,6 +29,8 @@ pub mod flags {
     pub const TRANSLUCENT: u32 = 1 << 6;
     /// Use the base texture's alpha as blend weight (`$basealphaenvmapmask` etc. ignored).
     pub const ADDITIVE: u32 = 1 << 7;
+    /// Lit per frame from the material's ambient cube and sun (characters, viewmodel).
+    pub const DYNAMIC_LIT: u32 = 1 << 8;
 }
 
 #[derive(Clone, Copy, Debug, ShaderType)]
@@ -39,6 +41,11 @@ pub struct WorldParams {
     pub alpha_ref: f32,
     pub exposure: f32,
     pub lightmap_scale: f32,
+    /// Dynamic lighting: +X, -X, +Y, -Y, +Z, -Z (Bevy axes).
+    pub ambient_cube: [Vec4; 6],
+    /// xyz: direction towards the sun (Bevy axes); w: sun visibility 0..1.
+    pub sun_dir: Vec4,
+    pub sun_color: Vec4,
 }
 
 impl Default for WorldParams {
@@ -49,6 +56,9 @@ impl Default for WorldParams {
             alpha_ref: 0.5,
             exposure: 1.0,
             lightmap_scale: 1.0,
+            ambient_cube: [Vec4::splat(0.4); 6],
+            sun_dir: Vec4::new(0.0, 1.0, 0.0, 0.0),
+            sun_color: Vec4::ZERO,
         }
     }
 }

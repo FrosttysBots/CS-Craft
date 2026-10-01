@@ -137,7 +137,7 @@ impl Batch {
 
 /// Whether a studio mesh's triangles need flipping to wind counter-clockwise
 /// around their vertex normals.
-fn needs_flip(mesh: &mdl::Mesh) -> bool {
+pub fn needs_flip(mesh: &mdl::Mesh) -> bool {
     let mut agree = 0i64;
     for tri in mesh.indices.chunks_exact(3) {
         let [a, b, c] = [tri[0] as usize, tri[1] as usize, tri[2] as usize];

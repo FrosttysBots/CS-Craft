@@ -24,17 +24,19 @@ weapons:
 | BSP v21 (CS:GO), with LZMA-compressed lumps | ✅ faces, displacements, brushes, entities, HDR lightmaps, ambient light, static props |
 | VTF textures (DXT1/3/5 + uncompressed) | ✅ DXT is uploaded compressed with its full mip chain |
 | VMT materials with `patch` includes | ✅ |
-| MDL / VVD / VTX models, PHY collision hulls | ✅ bind pose (no animation yet) |
+| MDL / VVD / VTX models, PHY collision hulls | ✅ incl. skeletons, hitboxes, sequences, body groups |
+| Animations | ✅ classic RLE tracks and CS:GO's newer frame-animation format (incl. its compressed quaternions), sections, `.ani` blocks, include models, weight lists |
 | Collision | ✅ swept-box traces against brushes, displacements and prop hulls |
 | Player movement | ✅ clean-room CS:GO movement: friction, accel, air-strafe, stairs, crouch-jump, stamina, bhop cap |
 | Simulation | ✅ deterministic fixed 64-tick `TickInput → step → Snapshot` |
 | Renderer | ✅ world plus lightmaps, WorldVertexTransition blends, batched props lit by ambient cube + sun, 3D skybox (≈120 fps on an RTX 3070 laptop GPU) |
 | Weapon catalog | ✅ `items_game.txt` → typed `WeaponDefinition`s (prefab inheritance) |
 | Shooting | ✅ fire rate, ammo, reloads, CS:GO inaccuracy model, seeded recoil pattern, range falloff, armor, hit groups (damage matches CS:GO: AK 111 helmet HS, 27 armored body) |
-| Bots | ✅ wander, react, aim and burst-fire through the same sim rules as players |
 | Sound | ✅ soundscripts + weapon sounds from the VPK, spatial |
-| Characters | ⚠️ real T/CT models in reference pose (no skeletal animation yet) |
-| Rounds, economy, bomb, grenades, viewmodels, netcode, nav-mesh bots | ⏳ see [docs/ROADMAP.md](docs/ROADMAP.md) |
+| Characters | ✅ GPU-skinned T/CT models animated from CS:GO's own animation set: 9-way run/walk/crouch blends, aim poses by pitch, jump/fall, reload and fire gestures, holding their real weapon models |
+| First-person weapons | ✅ viewmodels with team arms (bone-merged), draw/idle/fire/reload animations from the game, CS:GO viewmodel FOV and offsets, sway, own camera so guns never clip walls |
+| Bots | ✅ nav-mesh path-finding to callouts (Long A, Mid, bombsites...) |
+| Rounds, economy, bomb, grenades, netcode | ⏳ see [docs/ROADMAP.md](docs/ROADMAP.md) |
 
 ## What you need
 
