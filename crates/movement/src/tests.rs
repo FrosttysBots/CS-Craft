@@ -191,3 +191,25 @@ fn angle_vectors_match_source() {
     assert!((r - Vec3::X).length() < 1e-5);
     assert!((u - Vec3::Z).length() < 1e-5);
 }
+
+struct VoxelPlatform(CollisionWorld);
+impl TraceWorld for VoxelPlatform {
+    fn voxel_scale(&self)->f32 {40.}
+    fn trace_hull(&self,a:Vec3,b:Vec3,lo:Vec3,hi:Vec3,mask:i32)->Trace {self.0.trace_box(a,b,lo,hi,mask)}
+}
+#[test]
+fn minecraft_crouch_stops_at_straight_and_diagonal_edges_but_release_allows_falling() {
+    let mut collision=CollisionWorld::new();
+    collision.add_convex(aabb(Vec3::new(0.,0.,-40.),Vec3::new(40.,40.,0.)));collision.finalize();
+    let w=VoxelPlatform(collision);
+    for yaw in [0.,45.,90.,180.,225.,270.] {
+        let mut p=PlayerMove::default();p.origin=Vec3::new(20.,20.,0.04);p.on_ground=true;
+        let mut input=forward(250.);input.view_angles.y=yaw;input.buttons=buttons::DUCK;
+        for _ in 0..256 {player_move(&mut p,&input,&MoveConfig::default(),&w,DT);}
+        assert!(p.origin.z>=-0.1,"fell at yaw {yaw}: {:?}",p.origin);
+        assert!(p.origin.x>=-16. && p.origin.x<=56. && p.origin.y>=-16. && p.origin.y<=56.);
+        input.buttons=0;
+        for _ in 0..128 {player_move(&mut p,&input,&MoveConfig::default(),&w,DT);}
+        assert!(p.origin.z< -40.,"release should allow walking off edge");
+    }
+}

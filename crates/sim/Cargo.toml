@@ -13,6 +13,7 @@ movement.workspace = true
 bsp.workspace = true
 weapons.workspace = true
 nav.workspace = true
+kv.workspace = true
 
 [dev-dependencies]
 content.workspace = true

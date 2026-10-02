@@ -89,6 +89,8 @@ pub struct WeaponDefinition {
     pub world_model: String,
     /// Soundscript entry for a shot, e.g. `Weapon_AK47.Single`.
     pub fire_sound: String,
+    pub zoom_in_sound: String,
+    pub zoom_out_sound: String,
     pub kill_award: i32,
     /// Every resolved attribute, for anything not lifted into a field.
     pub attributes: HashMap<String, String>,
@@ -152,7 +154,7 @@ impl Catalog {
                 continue;
             }
             // Only base items carry the canonical stats.
-            if item.str("baseitem") != Some("1") {
+            if item.str("baseitem") != Some("1") && item.str("prefab") != Some("melee_unusual") && !matches!(class_name, "weapon_flashbang" | "weapon_hegrenade" | "weapon_smokegrenade" | "weapon_molotov" | "weapon_incgrenade" | "weapon_decoy") {
                 continue;
             }
             let resolved = resolve(item, &prefabs);
@@ -260,7 +262,7 @@ fn build(index: &str, class_name: &str, r: &Resolved) -> WeaponDefinition {
         cycle_time: a("cycletime").unwrap_or(0.15),
         full_auto: a("is full auto").is_some_and(|v| v != 0.0),
         bullets: a("bullets").map(|v| v as u32).unwrap_or(1).max(1),
-        clip_size: ai("primary clip size").unwrap_or(-1),
+        clip_size: ai("primary clip size").or_else(|| ai("primary default clip size")).unwrap_or(-1),
         reserve_ammo: ai("primary reserve ammo max").unwrap_or(0),
         max_player_speed: a("max player speed").unwrap_or(250.0),
         accuracy: Accuracy {
@@ -284,6 +286,8 @@ fn build(index: &str, class_name: &str, r: &Resolved) -> WeaponDefinition {
         view_model: f("model_player"),
         world_model: f("model_world"),
         fire_sound: f("visuals/sound_single_shot"),
+        zoom_in_sound: f("zoom_in_sound"),
+        zoom_out_sound: f("zoom_out_sound"),
         kill_award: ai("kill award").unwrap_or(300),
         attributes: r.attributes.clone(),
     }

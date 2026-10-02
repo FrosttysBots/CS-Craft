@@ -38,6 +38,17 @@ pub fn run(map: &str) -> i32 {
     );
 
     let mut failures = 0;
+    let mut displacement_lightmaps = 0;
+    for (i, face) in bsp.faces.iter().enumerate().filter(|(_, f)| f.dispinfo >= 0) {
+        if let (Some(mesh), Some((width, height, _))) = (bsp.displacement(i), bsp.face_lightmap(face)) {
+            displacement_lightmaps += 1;
+            if mesh.luxel_coords.iter().any(|uv| !uv.is_finite() || uv.x < 0.0 || uv.y < 0.0 || uv.x > (width-1) as f32 || uv.y > (height-1) as f32) {
+                failures += 1;
+                println!("  displacement {i}: lightmap UV outside its own atlas rectangle");
+            }
+        }
+    }
+    println!("displacement lightmaps: {displacement_lightmaps} checked");
     let read = |p: &str| fs.read_string(p);
     let mut shaders: BTreeMap<String, usize> = BTreeMap::new();
     let mut formats: BTreeMap<String, usize> = BTreeMap::new();

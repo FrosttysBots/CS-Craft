@@ -9,6 +9,7 @@
 //! frame is the caller's job.
 
 pub mod disp;
+pub mod visibility;
 pub mod lump;
 pub mod staticprops;
 
@@ -247,6 +248,7 @@ pub struct Bsp {
     pub faces: Vec<Face>,
     /// Raw `ColorRGBExp32` luxels.
     pub lighting: Vec<u8>,
+    pub visibility: Vec<u8>,
     pub lighting_is_hdr: bool,
     pub leafs: Vec<Leaf>,
     pub edges: Vec<[u16; 2]>,
@@ -320,6 +322,7 @@ impl Bsp {
                 String::from_utf8_lossy(&string_data[start..end]).into_owned()
             })
             .collect();
+        bsp.visibility = get(4)?;
         bsp.vertices = lump::records(&get(lumps::VERTEXES)?, 12, |r| r.vec3(0));
         bsp.nodes = lump::records(&get(lumps::NODES)?, 32, |r| Node {
             plane: r.i32(0),
@@ -492,7 +495,7 @@ impl Bsp {
             return None;
         }
         let ti = self.texinfo.get(face.texinfo as usize)?;
-        if ti.flags & surf::NOLIGHT != 0 {
+        if ti.flags & surf::NOLIGHT != 0 || face.lightmap_size.iter().any(|&v| v < 0) {
             return None;
         }
         Some((
@@ -504,10 +507,20 @@ impl Bsp {
     /// Linear RGB luxels for the face's first light style (the flat,
     /// non-bumped lightmap), row-major, `w * h` entries.
     pub fn face_lightmap(&self, face: &Face) -> Option<(usize, usize, Vec<[f32; 3]>)> {
+        self.face_lightmap_layer(face, 0)
+    }
+
+    /// First light style: flat layer followed by the three radiosity-normal
+    /// basis layers. An unbumped face repeats its flat lighting, never reads
+    /// into the next face's data.
+    pub fn face_lightmap_layer(&self, face: &Face, layer: usize) -> Option<(usize, usize, Vec<[f32; 3]>)> {
+        if layer > 3 { return None; }
         let (w, h) = self.lightmap_dims(face)?;
-        let start = face.light_offset as usize;
-        let count = w * h;
-        let bytes = self.lighting.get(start..start + count * 4)?;
+        let bumped = self.texinfo.get(face.texinfo as usize)?.flags & surf::BUMPLIGHT != 0;
+        let stride = w.checked_mul(h)?.checked_mul(4)?;
+        let offset = stride.checked_mul(if bumped { layer } else { 0 })?;
+        let start = (face.light_offset as usize).checked_add(offset)?;
+        let bytes = self.lighting.get(start..start.checked_add(stride)?)?;
         let texels = bytes
             .chunks_exact(4)
             .map(|c| decode_rgbexp(c[0], c[1], c[2], c[3] as i8))
@@ -579,6 +592,7 @@ impl Bsp {
 
     /// Which leaf contains a point (Source axes).
     pub fn point_leaf(&self, point: Vec3) -> usize {
+        if self.nodes.is_empty(){return 0;}
         let mut node = self.models.first().map_or(0, |m| m.head_node);
         while node >= 0 {
             let n = &self.nodes[node as usize];
@@ -652,5 +666,31 @@ mod orientation_tests {
         };
         // Clockwise seen from -Y means Newell's (CCW) normal points +Y.
         assert!((newell(&outside_minus_y) - Vec3::Y).length() < 1e-5);
+    }
+}
+
+#[cfg(test)] mod directional_light_tests {
+    use super::*;
+    fn fixture() -> (Bsp, Face) {
+        let mut b = Bsp::default();
+        b.texinfo.push(TexInfo { texture_vecs: [Vec4::ZERO;2], lightmap_vecs: [Vec4::ZERO;2], flags: surf::BUMPLIGHT, texdata:0 });
+        b.lighting = vec![10,0,0,0, 20,0,0,0, 30,0,0,0, 40,0,0,0];
+        let face = Face {plane:0,side:0,first_edge:0,num_edges:0,texinfo:0,dispinfo:-1,styles:[0,255,255,255],light_offset:0,lightmap_mins:[0;2],lightmap_size:[0;2]};
+        (b,face)
+    }
+    #[test] fn directional_layers_have_separate_offsets() {
+        let (b,f) = fixture();
+        for layer in 0..4 { assert!((b.face_lightmap_layer(&f,layer).unwrap().2[0][0] - (10*(layer+1)) as f32/255.0).abs() < 1e-6); }
+        assert!(b.face_lightmap_layer(&f,4).is_none());
+    }
+    #[test] fn unbumped_and_truncated_faces_do_not_read_neighbours() {
+        let (mut b,mut f) = fixture();
+        b.texinfo[0].flags = 0;
+        assert_eq!(b.face_lightmap_layer(&f,3), b.face_lightmap(&f));
+        b.texinfo[0].flags = surf::BUMPLIGHT;
+        b.lighting.truncate(12);
+        assert!(b.face_lightmap_layer(&f,3).is_none());
+        f.lightmap_size[0] = -1;
+        assert!(b.face_lightmap(&f).is_none());
     }
 }

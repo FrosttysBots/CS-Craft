@@ -65,6 +65,8 @@ pub struct Vertex {
     pub position: Vec3,
     pub normal: Vec3,
     pub uv: Vec2,
+    /// Authored tangent and handedness from the VVD tangent stream.
+    pub tangent: Option<[f32; 4]>,
     /// Up to three influencing bones (model bone indices) and their weights.
     pub bones: [u8; 3],
     pub weights: [f32; 3],
@@ -100,6 +102,8 @@ pub struct Model {
     /// LOD 0 meshes of the default body group (sub-model 0 of each body part).
     pub meshes: Vec<Mesh>,
     pub bones: Vec<skeleton::Bone>,
+    /// Named points relative to animated bones (muzzles, ejectors, cameras).
+    pub attachments: Vec<Attachment>,
     pub hitboxes: Vec<skeleton::Hitbox>,
     pub animations: Vec<anim::AnimDesc>,
     pub sequences: Vec<anim::Sequence>,
@@ -114,6 +118,31 @@ pub struct Model {
     pub anim_blocks: Vec<(u32, u32)>,
     /// The .mdl bytes (animation data is decoded from them on demand).
     pub raw: std::sync::Arc<Vec<u8>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Attachment {
+    pub name: String,
+    pub bone: usize,
+    pub position: Vec3,
+}
+
+fn read_attachments(m: R<'_>, bone_count: usize) -> io::Result<Vec<Attachment>> {
+    // MDL v48 attachment records observed in the installed assets: a relative
+    // name, flags, bone index, row-major 3x4 local transform and reserved data.
+    let count=m.i32(240)?.max(0) as usize;
+    let base=m.i32(244)?.max(0) as usize;
+    if count>m.0.len().saturating_sub(base)/92 {return Err(invalid("attachment table past end"));}
+    let mut out=Vec::with_capacity(count);
+    for i in 0..count {
+        let at=base+i*92;let bone=m.i32(at+8)?;
+        if bone<0 || bone as usize>=bone_count {return Err(invalid("attachment bone out of range"));}
+        let name=(at as i64+m.i32(at)? as i64).try_into().map_err(|_|invalid("negative attachment name"))?;
+        let position=Vec3::new(m.f32(at+24)?,m.f32(at+40)?,m.f32(at+56)?);
+        if !position.is_finite(){return Err(invalid("non-finite attachment position"));}
+        out.push(Attachment{name:m.cstr(name)?,bone:bone as usize,position});
+    }
+    Ok(out)
 }
 
 impl Model {
@@ -173,6 +202,7 @@ impl Model {
     fn read_animation_data(&mut self, mdl: &[u8]) -> io::Result<()> {
         let m = R(mdl);
         self.bones = skeleton::read_bones(&m, m.i32(156)?.max(0) as usize, m.i32(160)?.max(0) as usize)?;
+        self.attachments = read_attachments(m, self.bones.len())?;
         self.hitboxes = skeleton::read_hitboxes(&m, m.i32(172)?.max(0) as usize, m.i32(176)?.max(0) as usize)
             .unwrap_or_default();
         self.animations = anim::read_anim_descs(&m, m.i32(180)?.max(0) as usize, m.i32(184)?.max(0) as usize)?;
@@ -375,9 +405,16 @@ fn read_vvd(vvd: &[u8]) -> io::Result<Vec<Vertex>> {
     let num_fixups = r.i32(48)?.max(0) as usize;
     let fixup_start = r.i32(52)?.max(0) as usize;
     let data_start = r.i32(56)?.max(0) as usize;
+    let tangent_start = r.i32(60)?.max(0) as usize;
     let read_vertex = |i: usize| -> io::Result<Vertex> {
         let o = data_start + i * 48;
         Ok(Vertex {
+            tangent: if tangent_start > 0 {
+                let t = tangent_start + i * 16;
+                let values = [r.f32(t)?, r.f32(t + 4)?, r.f32(t + 8)?, r.f32(t + 12)?];
+                let xyz = Vec3::new(values[0], values[1], values[2]);
+                (values.iter().all(|v| v.is_finite()) && xyz.length_squared() > 0.5 && values[3].abs() > 0.5).then_some(values)
+            } else { None },
             position: r.vec3(o + 16)?,
             normal: r.vec3(o + 28)?,
             uv: Vec2::new(r.f32(o + 40)?, r.f32(o + 44)?),
@@ -421,6 +458,17 @@ pub fn angles_to_mat3(angles: Vec3) -> glam::Mat3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn attachment_local_translation_and_validation() {
+        let mut data=vec![0u8;512];
+        for (at,n) in [(240,1i32),(244,300),(300,92),(308,0)] {data[at..at+4].copy_from_slice(&n.to_le_bytes());}
+        data[392..394].copy_from_slice(b"1\0");
+        for (at,v) in [(324,2.0f32),(340,3.0),(356,9.0)] {data[at..at+4].copy_from_slice(&v.to_le_bytes());}
+        let a=read_attachments(R(&data),1).unwrap();
+        assert_eq!(a[0].name,"1");assert_eq!(a[0].position,Vec3::new(2.0,3.0,9.0));
+        assert!(read_attachments(R(&data),0).is_err());
+        data[240..244].copy_from_slice(&100i32.to_le_bytes());assert!(read_attachments(R(&data),1).is_err());
+    }
 
     #[test]
     fn qangle_forward_vector() {
@@ -432,5 +480,27 @@ mod tests {
         let m = angles_to_mat3(Vec3::new(45.0, 0.0, 0.0));
         let f = m * Vec3::X;
         assert!(f.z < 0.0);
+    }
+}
+
+#[cfg(test)] mod tangent_tests {
+    use super::*;
+    #[test] fn vvd_fixups_reorder_tangents_with_vertices() {
+        let mut data = vec![0u8; 216];
+        data[0..4].copy_from_slice(b"IDSV");
+        for (offset, value) in [(16,2i32),(48,2),(52,192),(56,64),(60,160)] { data[offset..offset+4].copy_from_slice(&value.to_le_bytes()); }
+        for i in 0..2 {
+            data[64+i*48+16..64+i*48+20].copy_from_slice(&(i as f32).to_le_bytes());
+            let t = [1.0f32,0.0,0.0,if i==0 {1.0} else {-1.0}];
+            for (k,v) in t.iter().enumerate() { data[160+i*16+k*4..164+i*16+k*4].copy_from_slice(&v.to_le_bytes()); }
+            data[192+i*12+4..192+i*12+8].copy_from_slice(&((1-i) as i32).to_le_bytes());
+            data[192+i*12+8..192+i*12+12].copy_from_slice(&1i32.to_le_bytes());
+        }
+        let vertices = read_vvd(&data).unwrap();
+        assert_eq!(vertices[0].position.x, 1.0);
+        assert_eq!(vertices[0].tangent.unwrap()[3], -1.0);
+        assert_eq!(vertices[1].tangent.unwrap()[3], 1.0);
+        data[60..64].fill(0);
+        assert!(read_vvd(&data).unwrap().iter().all(|v| v.tangent.is_none()));
     }
 }

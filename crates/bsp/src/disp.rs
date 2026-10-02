@@ -44,7 +44,7 @@ pub fn build(bsp: &Bsp, face_index: usize) -> Option<DispMesh> {
     if corners.len() != 4 {
         return None;
     }
-    let texinfo = bsp.texinfo.get(face.texinfo as usize)?;
+
 
     // Rotate so corner 0 is the displacement's start corner.
     let start = (0..4)
@@ -56,14 +56,11 @@ pub fn build(bsp: &Bsp, face_index: usize) -> Option<DispMesh> {
         .unwrap_or(0);
     let c: [Vec3; 4] = std::array::from_fn(|i| corners[(start + i) % 4]);
 
-    let luxel = |p: Vec3| {
-        let lv = &texinfo.lightmap_vecs;
-        Vec2::new(
-            lv[0].truncate().dot(p) + lv[0].w - face.lightmap_mins[0] as f32,
-            lv[1].truncate().dot(p) + lv[1].w - face.lightmap_mins[1] as f32,
-        )
-    };
-    let lc: [Vec2; 4] = std::array::from_fn(|i| luxel(c[i]));
+    // Displacements have a rectangular lightmap parameterised over their
+    // grid, starting at start_position. Brush texture/lightmap vectors may
+    // be rotated or skewed and do not describe this grid. Projecting them
+    // here samples neighbouring faces (or empty atlas pixels).
+    let lightmap_extent = Vec2::new(face.lightmap_size[0].max(0) as f32, face.lightmap_size[1].max(0) as f32);
 
     let n = info.side_len();
     let count = n * n;
@@ -79,8 +76,6 @@ pub fn build(bsp: &Bsp, face_index: usize) -> Option<DispMesh> {
         let ty = y as f32 / denom;
         let a = c[0].lerp(c[1], ty);
         let b = c[3].lerp(c[2], ty);
-        let la = lc[0].lerp(lc[1], ty);
-        let lb = lc[3].lerp(lc[2], ty);
         for x in 0..n {
             let tx = x as f32 / denom;
             let base = a.lerp(b, tx);
@@ -88,7 +83,7 @@ pub fn build(bsp: &Bsp, face_index: usize) -> Option<DispMesh> {
             positions.push(base + dv.vec * dv.dist);
             base_positions.push(base);
             alphas.push((dv.alpha / 255.0).clamp(0.0, 1.0));
-            luxel_coords.push(la.lerp(lb, tx));
+            luxel_coords.push(Vec2::new(tx, ty) * lightmap_extent);
         }
     }
 
@@ -139,4 +134,27 @@ pub fn build(bsp: &Bsp, face_index: usize) -> Option<DispMesh> {
         tri_tags,
         info,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Face, Plane, DispVert};
+    #[test]
+    fn skewed_displacement_uses_grid_lightmap_not_brush_projection() {
+        let mut bsp = Bsp::default();
+        bsp.vertices = vec![Vec3::new(0.0,0.0,0.0), Vec3::new(0.0,320.0,0.0), Vec3::new(448.0,320.0,0.0), Vec3::new(448.0,64.0,0.0)];
+        bsp.edges = vec![[0,1],[1,2],[2,3],[3,0]];
+        bsp.surfedges = vec![0,1,2,3];
+        bsp.planes = vec![Plane { normal: Vec3::Z, dist: 0.0, kind: 2 }];
+        bsp.faces = vec![Face { plane: 0, side: 0, first_edge: 0, num_edges: 4, texinfo: 0, dispinfo: 0, styles: [0,255,255,255], light_offset: 0, lightmap_mins: [-128,-126], lightmap_size: [57,41] }];
+        bsp.dispinfos = vec![DispInfo { start_position: Vec3::ZERO, disp_vert_start: 0, disp_tri_start: 0, power: 2, flags: 0, contents: 1, map_face: 0 }];
+        bsp.disp_verts = vec![DispVert { vec: Vec3::Z, dist: 0.0, alpha: 0.0 };25];
+        let mesh = build(&bsp,0).unwrap();
+        assert_eq!(mesh.luxel_coords[0], Vec2::ZERO);
+        assert_eq!(mesh.luxel_coords[4], Vec2::new(57.0,0.0));
+        assert_eq!(mesh.luxel_coords[20], Vec2::new(0.0,41.0));
+        assert_eq!(mesh.luxel_coords[24], Vec2::new(57.0,41.0));
+        assert_eq!(mesh.luxel_coords[12], Vec2::new(28.5,20.5));
+    }
 }

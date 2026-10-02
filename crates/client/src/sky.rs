@@ -21,6 +21,35 @@ pub fn sky_layer() -> RenderLayers {
     RenderLayers::layer(SKY_LAYER)
 }
 
+#[derive(Component)]
+pub struct SkyFace;
+
+/// Original six sky textures surround the camera behind the 3D skybox.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_2d(commands: &mut Commands, level: &level::Level, meshes: &mut Assets<Mesh>, materials: &mut Assets<crate::material::WorldMaterial>, images: &mut Assets<Image>, textures: &mut crate::textures::TextureCache, shared: &crate::world_mesh::SharedHandles) {
+    use bevy::{asset::RenderAssetUsages, mesh::{Indices, PrimitiveTopology}};
+    let Some(name) = level.bsp.worldspawn().and_then(|w| w.str("skyname")) else { return };
+    // (outward normal, texture right, texture down), all in Source axes.
+    let x = glam::Vec3::X; let y = glam::Vec3::Y; let z = glam::Vec3::Z;
+    for (suffix, normal, right, down) in [("rt",x,-y,-z),("bk",y,x,-z),("lf",-x,y,-z),("ft",-y,-x,-z),("up",z,x,y),("dn",-z,x,-y)] {
+        let Some(vmt) = vmt::Material::load(&format!("skybox/{name}{suffix}"), &|p| level.vfs.read_string(p)) else { continue };
+        let mut material = crate::world_mesh::material_from_vmt(Some(&vmt), &level.vfs, textures, images, shared, 1.0, false);
+        material.params.flags = crate::material::flags::UNLIT;
+        material.cull = false;
+        let corners = [normal-right-down, normal+right-down, normal+right+down, normal-right+down];
+        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, corners.map(|p| to_bevy(p * 180_000.0).to_array()).to_vec());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![to_bevy(-normal).to_array();4]);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]);
+        mesh.insert_indices(Indices::U32(vec![0,1,2,0,2,3]));
+        commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(materials.add(material)), Transform::default(), sky_layer(), SkyFace));
+    }
+}
+
+pub fn follow_camera(local: Res<crate::player::LocalPlayer>, mut faces: Query<&mut Transform, With<SkyFace>>) {
+    for mut face in &mut faces { face.translation = to_bevy(local.render_eye); }
+}
+
 /// Maps 3D-skybox space into world space: `p' = (p - origin) * scale`.
 pub fn sky_transform(sky: &bsp::SkyCamera) -> Transform {
     Transform {

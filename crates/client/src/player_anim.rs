@@ -24,6 +24,8 @@ pub struct PlayerAnimSet {
     upper: Vec<bool>,
     source: Arc<mdl::Model>,
     clips: HashMap<String, Option<Arc<Clip>>>,
+    grids: HashMap<String, (Arc<Vec<String>>, [i32; 2])>,
+    menu_idle: Option<Clip>,
 }
 
 /// Inputs for one character this frame.
@@ -69,16 +71,53 @@ impl PlayerAnimSet {
         for (i, b) in bones.iter().enumerate() {
             upper[i] = Some(i) == root || (b.parent >= 0 && upper[b.parent as usize]);
         }
-        Some(Self {
+        let grids = source.sequences.iter().map(|s| {
+            let names = s.anims.iter().map(|&i| source.animations.get(i as usize).map(|a| a.name.clone()).unwrap_or_default()).collect();
+            (s.name.clone(), (Arc::new(names), s.group_size))
+        }).collect();
+        let mut set = Self {
+            grids,
             bones,
             upper,
             source: Arc::new(source),
             clips: HashMap::new(),
-        })
+            menu_idle: None,
+        };
+        if let Some(source)=fs.read("models/player/custom_player/uiplayer/animset_uiplayer_loadout.mdl")
+            .and_then(|bytes|mdl::Model::load_header(&bytes).ok()) {
+            if let Some(mut clip)=source.animation_index("@ct_loadout_rifle_idle_handrepo_m4")
+                .and_then(|index|source.decode_animation(index,None).ok())
+                .map(|clip|mdl::anim::retarget(&clip,&source.bones,&set.bones)) {
+                clip.looping=true;
+                set.menu_idle=Some(clip);
+            }
+        }
+        // Decode the clips used by the current animation controller during
+        // loading, so a first encounter/reload/jump cannot stall a frame.
+        let mut names = std::collections::HashSet::new();
+        for (sequence, (grid, _)) in &set.grids {
+            if sequence.starts_with("move_") || ["rifle", "pistol", "knife", "sniper"].iter().any(|p| sequence.starts_with(&format!("{p}_aim_"))) {
+                names.extend(grid.iter().cloned());
+            }
+        }
+        for prefix in ["rifle", "pistol", "knife", "sniper"] {
+            for action in ["fire", "fire_crouch", "reload", "reload_crouch"] { names.insert(format!("@{prefix}_{action}")); }
+        }
+        names.extend(["a_jump_onspot", "a_jump_onspot_crouch", "a_fall"].map(str::to_string));
+        for name in names { set.clip(&name); }
+        Some(set)
     }
 
     pub fn bones(&self) -> &[Bone] {
         &self.bones
+    }
+
+    /// Original Panorama loadout idle, using real time independently of a paused match.
+    pub fn menu_pose(&self,time:f32)->Option<Vec<glam::Mat4>> {
+        let clip=self.menu_idle.as_ref()?;
+        let mut pose=skeleton::rest_pose(&self.bones);
+        clip.sample(time,&mut pose);
+        Some(skeleton::model_space(&self.bones,&pose))
     }
 
     /// A clip retargeted onto the character skeleton (cached).
@@ -111,14 +150,8 @@ impl PlayerAnimSet {
     }
 
     /// Animation names of a sequence's blend grid.
-    fn sequence_anims(&self, seq: &str) -> Option<(Vec<String>, [i32; 2])> {
-        let s = self.source.sequence(seq)?;
-        let names = s
-            .anims
-            .iter()
-            .map(|&i| self.source.animations.get(i as usize).map(|a| a.name.clone()).unwrap_or_default())
-            .collect();
-        Some((names, s.group_size))
+    fn sequence_anims(&self, seq: &str) -> Option<(Arc<Vec<String>>, [i32; 2])> {
+        self.grids.get(seq).cloned()
     }
 
     fn sample(&mut self, name: &str, t: f32, out: &mut Pose) -> bool {

@@ -60,29 +60,32 @@ impl LightmapAtlas {
         }
         let height = (y + shelf_h).next_power_of_two().max(4);
 
-        let mut texels = vec![0u16; width * height * 4];
+        let mut texels = vec![0u16; width * height * 4 * 4];
+        for layer in 0..4 {
+        let layer_offset = layer * width * height * 4;
         let one = f32_to_f16(1.0);
         for yy in 0..4 {
             for xx in 0..4 {
-                let o = (yy * width + xx) * 4;
+                let o = layer_offset + (yy * width + xx) * 4;
                 texels[o..o + 4].copy_from_slice(&[one, one, one, one]);
             }
         }
-        for (face, px, py, w, h) in placed {
-            let Some((_, _, lux)) = bsp.face_lightmap(&bsp.faces[face]) else { continue };
+        for &(face, px, py, w, h) in &placed {
+            let Some((_, _, lux)) = bsp.face_lightmap_layer(&bsp.faces[face], layer).or_else(|| bsp.face_lightmap(&bsp.faces[face])) else { continue };
             for ty in 0..h + 2 * PAD {
                 for tx in 0..w + 2 * PAD {
                     // Clamp into the face's luxels so the border repeats the edge.
                     let sx = tx.saturating_sub(PAD).min(w - 1);
                     let sy = ty.saturating_sub(PAD).min(h - 1);
                     let c = lux[sy * w + sx];
-                    let o = ((py + ty) * width + px + tx) * 4;
+                    let o = layer_offset + ((py + ty) * width + px + tx) * 4;
                     texels[o] = f32_to_f16(c[0]);
                     texels[o + 1] = f32_to_f16(c[1]);
                     texels[o + 2] = f32_to_f16(c[2]);
                     texels[o + 3] = one;
                 }
             }
+        }
         }
         Self {
             width,
@@ -110,7 +113,7 @@ impl LightmapAtlas {
             Extent3d {
                 width: self.width as u32,
                 height: self.height as u32,
-                depth_or_array_layers: 1,
+                depth_or_array_layers: 4,
             },
             TextureDimension::D2,
             bytes,
@@ -157,6 +160,7 @@ impl MeshBuilder {
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, self.uv1);
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.colors);
         mesh.insert_indices(Indices::U32(self.indices));
+        if let Err(e) = mesh.generate_tangents() { warn!("world tangents: {e}"); }
         mesh
     }
 }
@@ -183,6 +187,10 @@ fn visible_models(bsp: &Bsp) -> Vec<(usize, glam::Vec3)> {
             continue;
         };
         if model == 0 {
+            continue;
+        }
+        // Brushes a game mode enables later (Retakes walls) start hidden.
+        if ent.i64("startdisabled") == Some(1) {
             continue;
         }
         let origin = ent.str("origin").and_then(bsp::parse_origin).unwrap_or(glam::Vec3::ZERO);
@@ -226,7 +234,7 @@ pub fn sky_faces(bsp: &Bsp, sky: &bsp::SkyCamera) -> std::collections::HashSet<u
 /// Builds batched world meshes keyed by material name (lowercase), for the
 /// faces `include` accepts.
 pub fn build(bsp: &Bsp, atlas: &LightmapAtlas, include: &dyn Fn(usize) -> bool) -> WorldBuild {
-    let mut groups: HashMap<String, MeshBuilder> = HashMap::new();
+    let mut groups: HashMap<(String, [i32; 3]), MeshBuilder> = HashMap::new();
     let mut triangles = 0usize;
 
     for (model_index, origin) in visible_models(bsp) {
@@ -248,7 +256,9 @@ pub fn build(bsp: &Bsp, atlas: &LightmapAtlas, include: &dyn Fn(usize) -> bool) 
                 continue;
             }
             let (tw, th) = (td.width.max(1) as f32, td.height.max(1) as f32);
-            let mb = groups.entry(name).or_default();
+            let verts_for_bounds = bsp.face_vertices(face);
+            let center = verts_for_bounds.iter().copied().sum::<glam::Vec3>() / verts_for_bounds.len().max(1) as f32 + origin;
+            let mb = groups.entry((name, spatial_cell(center))).or_default();
 
             if face.dispinfo >= 0 {
                 let Some(d) = bsp.displacement(face_index) else { continue };
@@ -318,7 +328,7 @@ pub fn build(bsp: &Bsp, atlas: &LightmapAtlas, include: &dyn Fn(usize) -> bool) 
     let meshes = groups
         .into_iter()
         .filter(|(_, mb)| !mb.indices.is_empty())
-        .map(|(name, mb)| (name, mb.into_mesh()))
+        .map(|((name, _), mb)| (name, mb.into_mesh()))
         .collect();
     WorldBuild { meshes, triangles }
 }
@@ -363,6 +373,12 @@ pub fn material_from_vmt(
         base2: textures.white.clone(),
         lightmap: shared.lightmap.clone(),
         modulate: textures.black.clone(),
+        normal: textures.flat_normal.clone(),
+        normal2: textures.flat_normal.clone(),
+        prop_light: textures.white.clone(),
+        phong_map: textures.white.clone(),
+        skin_surface:textures.white.clone(),
+        skin_position:textures.white.clone(),
         alpha_mode: AlphaMode::Opaque,
         cull: true,
     };
@@ -399,6 +415,27 @@ pub fn material_from_vmt(
             f |= flags::BLEND_MODULATE;
         }
     }
+    if let Some(info) = mat.str("$bumpmap").and_then(|n| textures.load(fs, images, n, false)) {
+        out.normal = info.handle;
+        f |= flags::NORMAL;
+        if mat.flag("$ssbump") { f |= flags::SSBUMP; }
+        if mat.flag("$ssbumpmathfix") { f |= flags::SSBUMP_MATHFIX; }
+    }
+    if let Some(info) = mat.str("$bumpmap2").and_then(|n| textures.load(fs, images, n, false)) {
+        out.normal2 = info.handle;
+        f |= flags::NORMAL2;
+    }
+    if !lightmapped && mat.flag("$phong") {
+        params.phong=Vec4::new(mat.f32("$phongexponent").unwrap_or(20.0).max(1.0),mat.f32("$phongboost").unwrap_or(1.0),0.0,if mat.flag("$basemapalphaphongmask"){1.0}else{0.0});
+        if let Some(info)=mat.str("$phongexponenttexture").and_then(|n|textures.load(fs,images,n,false)) {
+            out.phong_map=info.handle;params.phong.z=1.0;
+        }
+        let tint=mat.color("$phongtint").unwrap_or([1.0;3]);
+        params.phong_tint=Vec4::new(tint[0],tint[1],tint[2],if mat.flag("$phongalbedotint"){1.0}else{0.0});
+        let fresnel=mat.color("$phongfresnelranges").unwrap_or([0.0,0.5,1.0]);
+        params.fresnel=Vec4::new(fresnel[0],fresnel[1],fresnel[2],0.0);
+        params.rim=Vec4::new(mat.f32("$rimlightexponent").unwrap_or(4.0).max(1.0),if mat.flag("$rimlight"){mat.f32("$rimlightboost").unwrap_or(1.0)}else{0.0},if mat.flag("$rimmask"){1.0}else{0.0},if mat.flag("$halflambert")&&!mat.flag("$phongdisablehalflambert"){1.0}else{0.0});
+    }
     if mat.alpha_test() {
         f |= flags::ALPHA_TEST;
         params.alpha_ref = mat.alpha_test_ref();
@@ -422,4 +459,10 @@ pub fn material_from_vmt(
     params.flags = f;
     out.params = params;
     out
+}
+
+/// Keep batches local so their actual bounds can be rejected by the frustum.
+/// Faces/props remain intact; a large object is never clipped at a cell edge.
+pub fn spatial_cell(p: glam::Vec3) -> [i32; 3] {
+    (p / 768.0).floor().as_ivec3().to_array()
 }

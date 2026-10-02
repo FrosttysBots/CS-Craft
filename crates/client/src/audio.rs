@@ -22,6 +22,9 @@ struct Entry {
     volume: f32,
 }
 
+#[derive(Component)]
+pub struct SoundGain(pub f32);
+
 #[derive(Resource, Default)]
 pub struct SoundLibrary {
     entries: HashMap<String, Entry>,
@@ -127,6 +130,20 @@ impl SoundLibrary {
         lib
     }
 
+    /// Soundscript entry names (lower case).
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.entries.keys().map(String::as_str)
+    }
+
+    /// The files an entry picks from.
+    pub fn waves(&self, name: &str) -> Option<&[String]> {
+        self.entries.get(&name.to_ascii_lowercase()).map(|e| e.waves.as_slice())
+    }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.entries.contains_key(&name.to_ascii_lowercase())
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -163,7 +180,7 @@ impl SoundLibrary {
         match at {
             Some(pos) => {
                 commands.spawn((
-                    AudioPlayer(handle),
+                    AudioPlayer(handle), SoundGain(entry.volume),
                     PlaybackSettings::DESPAWN
                         .with_volume(volume)
                         .with_spatial(true)
@@ -172,7 +189,7 @@ impl SoundLibrary {
                 ));
             }
             None => {
-                commands.spawn((AudioPlayer(handle), PlaybackSettings::DESPAWN.with_volume(volume)));
+                commands.spawn((AudioPlayer(handle), SoundGain(entry.volume), PlaybackSettings::DESPAWN.with_volume(volume)));
             }
         }
     }

@@ -1,0 +1,11 @@
+[package]
+name = "minecraftoss-generator"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Runtime world generation on core chunks, matching vanilla 26.3 results."
+
+[dependencies]
+minecraftoss-core = { path = "../core" }
+serde_json = "1"
+sha2 = "0.10"

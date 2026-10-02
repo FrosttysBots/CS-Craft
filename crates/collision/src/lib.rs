@@ -47,7 +47,7 @@ pub struct Trace {
 }
 
 impl Trace {
-    fn empty(end: Vec3) -> Self {
+    pub fn empty(end: Vec3) -> Self {
         Self {
             fraction: 1.0,
             end,
@@ -119,9 +119,39 @@ impl Grid {
     }
 }
 
+/// A live world backend. BSP levels leave this unset.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub enum Climbable { #[default] None, Ladder, Scaffolding }
+pub trait DynamicWorld: Send + Sync {
+    fn voxel_scale(&self)->f32 {0.}
+    fn climbable(&self,_origin:Vec3,_mins:Vec3,_maxs:Vec3)->Climbable {Climbable::None}
+    fn trace_player(&self,start:Vec3,end:Vec3,mins:Vec3,maxs:Vec3,mask:i32,_drop_scaffold:bool)->Trace {
+        self.trace_box(start,end,mins,maxs,mask)
+    }
+    fn hit_target(&self, _start:Vec3, _end:Vec3)->Option<(u64,f32)>{None}
+    fn damage_target(&self, _key:u64, _damage:f32, _from:Vec3){}
+    /// Exact ray contact, with a fallback for worlds that only need damage.
+    fn damage_target_at(&self, key:u64, damage:f32, from:Vec3, _point:Vec3) { self.damage_target(key, damage, from); }
+    fn damage_block(&self, _point:Vec3, _normal:Vec3, _damage:f32){}
+
+    fn trace_box(&self, start: Vec3, end: Vec3, mins: Vec3, maxs: Vec3, mask: i32) -> Trace;
+    fn point_contents(&self, point: Vec3, mask: i32) -> i32;
+}
+
+/// Clip a hull against one axis-aligned solid, accumulating the earliest hit.
+pub fn clip_bounds(start: Vec3, end: Vec3, mins: Vec3, maxs: Vec3, low: Vec3, high: Vec3, contents: i32, surface: u32, tr: &mut Trace) {
+    let planes = [Plane{normal:Vec3::X,dist:high.x}, Plane{normal:-Vec3::X,dist:-low.x},
+        Plane{normal:Vec3::Y,dist:high.y}, Plane{normal:-Vec3::Y,dist:-low.y},
+        Plane{normal:Vec3::Z,dist:high.z}, Plane{normal:-Vec3::Z,dist:-low.z}];
+    let offset=(mins+maxs)*0.5;
+    clip_convex(&planes,start+offset,end+offset,(maxs-mins)*0.5,contents,surface,tr);
+    tr.end=if tr.all_solid {start} else {start.lerp(end,tr.fraction)};
+}
+
 /// Names for surface ids (materials / surface props), index = surface id.
 #[derive(Default)]
 pub struct CollisionWorld {
+    pub dynamic: Option<std::sync::Arc<dyn DynamicWorld>>,
     pub convexes: Vec<Convex>,
     pub triangles: Vec<Triangle>,
     pub surfaces: Vec<String>,
@@ -258,6 +288,7 @@ impl CollisionWorld {
 
     /// Sweeps a box `mins..maxs` (relative to the position) from `start` to `end`.
     pub fn trace_box(&self, start: Vec3, end: Vec3, mins: Vec3, maxs: Vec3, mask: i32) -> Trace {
+        if let Some(world)=&self.dynamic { return world.trace_box(start,end,mins,maxs,mask); }
         let offset = (mins + maxs) * 0.5;
         let ext = (maxs - mins) * 0.5;
         let s = start + offset;
@@ -340,6 +371,7 @@ impl CollisionWorld {
 
     /// Contents at a point (union of all shapes containing it).
     pub fn point_contents(&self, p: Vec3, mask: i32) -> i32 {
+        if let Some(world)=&self.dynamic {return world.point_contents(p,mask);}
         let mut cands = Vec::new();
         self.candidates(p - Vec3::ONE, p + Vec3::ONE, &mut cands);
         let mut out = 0;
@@ -611,6 +643,11 @@ impl CollisionWorld {
             }
             // func_brush with "Solidity: never solid" (1).
             if class.eq_ignore_ascii_case("func_brush") && ent.i64("solidity") == Some(1) {
+                continue;
+            }
+            // Disabled until a game mode turns them on (e.g. the Retakes
+            // blockers on dust2): neither solid nor visible in normal play.
+            if ent.i64("startdisabled") == Some(1) {
                 continue;
             }
             let Some(model) = ent.str("model").and_then(|m| m.strip_prefix('*')).and_then(|n| n.parse::<usize>().ok()) else {

@@ -22,6 +22,7 @@ pub struct TextureCache {
     loaded: HashMap<String, Option<TextureInfo>>,
     pub white: Handle<Image>,
     pub black: Handle<Image>,
+    pub flat_normal: Handle<Image>,
     pub missing: Handle<Image>,
     pub stats_compressed: usize,
     pub stats_decoded: usize,
@@ -80,7 +81,10 @@ fn checkerboard() -> Image {
 
 impl TextureCache {
     pub fn new(images: &mut Assets<Image>) -> Self {
+        let mut flat = solid([128, 128, 255, 255]);
+        flat.texture_descriptor.format = TextureFormat::Rgba8Unorm;
         Self {
+            flat_normal: images.add(flat),
             white: images.add(solid([255, 255, 255, 255])),
             black: images.add(solid([0, 0, 0, 255])),
             missing: images.add(checkerboard()),

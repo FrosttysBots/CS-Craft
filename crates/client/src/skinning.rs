@@ -112,6 +112,11 @@ pub fn build_asset(
             m.insert_attribute(Mesh::ATTRIBUTE_JOINT_INDEX, VertexAttributeValues::Uint16x4(joints));
             m.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, weights);
             m.insert_indices(Indices::U32(indices));
+            if let Some(tangents) = mesh.vertices.iter().map(|v| v.tangent).collect::<Option<Vec<_>>>() {
+                m.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents.into_iter().map(|t| {
+                    let xyz = to_bevy(glam::Vec3::new(t[0],t[1],t[2])); [xyz.x,xyz.y,xyz.z,t[3]]
+                }).collect::<Vec<_>>());
+            } else if let Err(e) = m.generate_tangents() { warn!("model tangents: {e}"); }
             let tex = model.skin_texture(0, mesh.material);
             let vmt = model
                 .material_candidates(tex)
@@ -152,7 +157,9 @@ pub fn spawn(
     let meshes = asset
         .parts
         .iter()
-        .map(|(mesh, mat)| {
+        .enumerate()
+        .map(|(index, (mesh, mat))| {
+            let original = mat.clone();
             let mat = match materials.as_deref_mut() {
                 Some(store) => {
                     let copy = store.get(mat).cloned();
@@ -161,6 +168,7 @@ pub fn spawn(
                 None => mat.clone(),
             };
             let mut e = commands.spawn((
+                crate::skin_finish::SkinPart { material: asset.model.textures.get(asset.model.skin_texture(0,asset.model.meshes[index].material)).cloned().unwrap_or_default(), original, applied: None },
                 Mesh3d(mesh.clone()),
                 MeshMaterial3d(mat),
                 SkinnedMesh {
@@ -212,4 +220,29 @@ pub fn apply_pose(instance: &SkinnedInstance, world_from_model: Mat4, pose: &[gl
             *t = Transform::from_matrix(world);
         }
     }
+}
+
+/// Joint transforms for a pose, for instances whose joints were just
+/// spawned (and so cannot be queried yet).
+pub fn pose_transforms(world_from_model: Mat4, pose: &[glam::Mat4]) -> Vec<Transform> {
+    let s = axis_change();
+    let s_inv = s.inverse();
+    pose.iter()
+        .map(|m| Transform::from_matrix(world_from_model * s * to_bevy_mat(*m) * s_inv))
+        .collect()
+}
+
+/// Spawns an instance frozen in a pose (props on the ground).
+pub fn spawn_posed(
+    commands: &mut Commands,
+    asset: &SkinnedAsset,
+    materials: &mut Assets<WorldMaterial>,
+    world_from_model: Mat4,
+) -> SkinnedInstance {
+    let instance = spawn(commands, asset, None, Some(materials));
+    let pose = mdl::skeleton::model_space(&asset.model.bones, &mdl::skeleton::rest_pose(&asset.model.bones));
+    for (joint, t) in instance.joints.iter().zip(pose_transforms(world_from_model, &pose)) {
+        commands.entity(*joint).insert(t);
+    }
+    instance
 }

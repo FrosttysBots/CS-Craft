@@ -20,3 +20,7 @@ collision.workspace = true
 movement.workspace = true
 sim.workspace = true
 level.workspace = true
+
+overworld.workspace = true
+
+image = { version = "0.25", default-features = false, features = ["png"] }

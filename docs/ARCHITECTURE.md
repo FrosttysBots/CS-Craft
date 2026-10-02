@@ -23,7 +23,9 @@ client (Bevy)
   props        MDL → meshes, ambient-cube + sun lighting per instance
   material     WorldMaterial + shaders/world.wgsl
   player       input → sim → interpolated camera
-  hud          crosshair, speed, debug
+  hud/hud_art  original HUD imagery, map radar, equipment, round state
+  ui_assets    runtime VFONT1 decoder and original PNG art
+  interpolation previous/current render poses shared by camera, bodies and gun
 ```
 
 ## Principles
@@ -80,8 +82,23 @@ get face, axial and edge bevels in the same way.
   normal. Displacements are tessellated in `bsp::disp` (checkerboard
   diagonals) with smooth normals.
 - Lightmaps come from the HDR lump when present. Style-0 luxels go into an
-  `Rgba16Float` atlas with 1-luxel clamped borders.
+  four-layer `Rgba16Float` atlas (flat plus three radiosity-normal layers), with 1-luxel clamped borders. Unbumped faces repeat the flat layer.
 - DXT textures are uploaded to the GPU as BC1/2/3 with every mip level.
 - Props use the leaf ambient cube nearest their centre, plus
   `light_environment` sunlight gated by one shadow ray per prop.
-- Tonemapping is ACES in the shader, and the camera's own tonemapping is off.
+- Tonemapping currently uses extended Reinhard in the shader; camera tonemapping is off. Exact Source exposure/colour correction and baked VHV prop lighting remain incomplete.
+- Displacement lightmaps use grid UVs over each face rectangle, independent of brush projection vectors.
+- Six original sky textures surround the camera behind the 3D sky.
+- Input runs before fixed simulation. Position, spectator angles and recoil interpolate between snapshots; local mouse look stays immediate. Teleports, respawns and rounds reset the snapshot pair.
+- Original Stratum fonts and HUD PNGs load through VFS in memory. No game assets are copied into the project. Interface layouts are implemented in Bevy; the Panorama runtime is not embedded.
+
+- Normal maps use linear texture sampling. Model tangents come from VVD with
+  the same LOD fixup remapping as vertices; missing tangents use MikkTSpace.
+  Static props store an ambient cube and sun per instance in a lighting texture,
+  indexed by UV1, so batching does not merge their lighting environments.
+- Static batches use 768-unit cells while preserving complete geometry bounds.
+  PVS membership includes all leaves intersecting a batch's expanded bounds.
+  Missing/malformed PVS data fails open, and the 3D sky is excluded from PVS.
+- Animation blend-grid names are cached and used clips are predecoded before
+  gameplay. Character velocity follows render interpolation. Stair camera
+  offsets decay at a bounded rate and reset on respawn/teleport.

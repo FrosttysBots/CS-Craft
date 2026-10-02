@@ -24,15 +24,31 @@ pub const VIEW_PUNCH_FRACTION: f32 = 0.5;
 /// Recoil recovery when not firing, in pattern steps per second.
 pub const RECOIL_RECOVERY_RATE: f32 = 12.0;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cosmetic { pub serial:u64, pub paint: u32, pub seed: u32, pub wear: f32, pub stattrak:Option<u32>, pub souvenir:Option<u32>, pub stickers:[Option<(u32,f32)>;4] }
+
 #[derive(Clone, Debug)]
 pub struct WeaponState {
     pub def: Arc<WeaponDefinition>,
+    pub cosmetic: Option<Cosmetic>,
+    pub cosmetic_owner: Option<crate::PlayerId>,
     pub clip: i32,
     pub reserve: i32,
     /// Sim time at which the next shot may fire.
     pub next_attack: f32,
     /// Sim time at which an in-progress reload completes.
     pub reload_end: Option<f32>,
+    /// Sim time the current (or last) reload began.
+    pub reload_start: f32,
+    /// Shells loaded so far in a shell-by-shell reload.
+    pub shells_loaded: i32,
+    /// 0 is unscoped; other levels come from the installed item schema.
+    pub zoom_level: u8,
+    pub next_secondary_attack: f32,
+    pub zoom_changed_at: f32,
+    pub zoom_from_fov: f32,
+    pub resume_zoom: Option<u8>,
+    pub last_melee_attack: Option<f32>,
     /// Firing inaccuracy, milliradians; decays with recovery time.
     pub accuracy_penalty: f32,
     /// Position in the recoil pattern (shots, fractional while recovering).
@@ -48,14 +64,61 @@ impl WeaponState {
         let pattern = Arc::new(recoil_pattern(&def));
         Self {
             def,
+            cosmetic: None,
+            cosmetic_owner: None,
             clip,
             reserve,
             next_attack: 0.0,
             reload_end: None,
+            reload_start: 0.0,
+            shells_loaded: 0,
+            zoom_level: 0,
+            next_secondary_attack: 0.0,
+            zoom_changed_at: 0.0,
+            zoom_from_fov: 90.0,
+            resume_zoom: None,
+            last_melee_attack: None,
             accuracy_penalty: 0.0,
             recoil_index: 0.0,
             pattern,
         }
+    }
+
+    pub fn zoom_levels(&self) -> u8 {
+        self.def.attr_f32("zoom levels").unwrap_or(0.0).clamp(0.0, 2.0) as u8
+    }
+
+    pub fn fov(&self) -> f32 {
+        if self.zoom_level == 0 { 90.0 } else {
+            self.def.attr_f32(&format!("zoom fov {}", self.zoom_level)).unwrap_or(90.0)
+        }
+    }
+
+    pub fn rendered_fov(&self, time: f32) -> f32 {
+        let duration = self.def.attr_f32(&format!("zoom time {}", self.zoom_level)).unwrap_or(0.05).max(0.001);
+        let t = ((time - self.zoom_changed_at) / duration).clamp(0.0, 1.0);
+        self.zoom_from_fov + (self.fov() - self.zoom_from_fov) * t
+    }
+
+    pub fn set_zoom(&mut self, level: u8, time: f32) {
+        self.zoom_from_fov = self.rendered_fov(time);
+        self.zoom_level = level.min(self.zoom_levels());
+        self.zoom_changed_at = time;
+    }
+
+    pub fn reset_zoom(&mut self, time: f32) {
+        self.set_zoom(0, time);
+        self.resume_zoom = None;
+    }
+
+    pub fn alt_stat(&self, key: &str, base: f32) -> f32 {
+        if self.zoom_level > 0 { self.def.attr_f32(&format!("{key} alt")).unwrap_or(base) } else { base }
+    }
+
+    pub fn max_speed(&self) -> f32 { self.alt_stat("max player speed", self.def.max_player_speed) }
+
+    pub fn hides_viewmodel(&self) -> bool {
+        self.zoom_level > 0 && self.def.attr_f32("hide view model zoomed").is_some_and(|v| v != 0.0)
     }
 
     pub fn is_melee(&self) -> bool {
@@ -68,6 +131,49 @@ impl WeaponState {
 
     pub fn can_reload(&self) -> bool {
         self.uses_ammo() && self.reload_end.is_none() && self.clip < self.def.clip_size && self.reserve > 0
+    }
+
+    /// Shell-by-shell timing if this weapon loads one shell at a time.
+    pub fn shell_reload(&self) -> Option<ShellReload> {
+        shell_reload(&self.def)
+    }
+
+    /// Starts a reload: magazines finish after [`reload_time`]; shotguns
+    /// that load shells take a start, then one insert per missing shell (up
+    /// to the reserve), loading each shell as its insert completes.
+    pub fn begin_reload(&mut self, time: f32) {
+        self.reload_start = time;
+        self.shells_loaded = 0;
+        let total = match self.shell_reload() {
+            Some(s) => {
+                let shells = (self.def.clip_size - self.clip).min(self.reserve).max(1);
+                s.start + s.insert * shells as f32
+            }
+            None => reload_time(&self.def),
+        };
+        self.reload_end = Some(time + total);
+    }
+
+    /// 0..1 through the current reload.
+    pub fn reload_fraction(&self, time: f32) -> Option<f32> {
+        let end = self.reload_end?;
+        Some(((time - self.reload_start) / (end - self.reload_start).max(0.01)).clamp(0.0, 1.0))
+    }
+
+    /// Where a shell-by-shell reload is: the start (`None`) or the insert
+    /// of shell `n` (0-based), with 0..1 progress through that stage.
+    pub fn shell_stage(&self, time: f32) -> Option<(Option<i32>, f32)> {
+        let s = self.shell_reload()?;
+        let end = self.reload_end?;
+        let t = time - self.reload_start;
+        if t < s.start {
+            return Some((None, (t / s.start.max(0.01)).clamp(0.0, 1.0)));
+        }
+        // Rendering interpolates slightly past the last tick: stay on the
+        // final insert rather than start one that will not happen.
+        let shells = ((end - self.reload_start - s.start) / s.insert.max(0.01)).round().max(1.0);
+        let k = ((t - s.start) / s.insert.max(0.01)).clamp(0.0, shells - 1e-3);
+        Some((Some(k.floor() as i32), k.fract()))
     }
 
     /// Current aim punch (pitch, yaw) in degrees from the recoil pattern,
@@ -138,12 +244,56 @@ pub fn reload_time(def: &WeaponDefinition) -> f32 {
     }
 }
 
+/// Stages of a shell-by-shell reload, in seconds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShellReload {
+    /// Bringing the gun up to the loading port.
+    pub start: f32,
+    /// One shell.
+    pub insert: f32,
+    /// Racking it afterwards (cosmetic; the gun can fire).
+    pub finish: f32,
+}
+
+/// Shotguns without a magazine (the item schema gives the MAG-7 a
+/// `magazine model`; the Nova, XM1014 and Sawed-Off have none) load one
+/// shell at a time. Stage lengths are those of the view-model sequences
+/// `start_reload`, `insert` and `after_reload`.
+pub fn shell_reload(def: &WeaponDefinition) -> Option<ShellReload> {
+    if def.class != WeaponClass::Shotgun || def.attributes.contains_key("magazine model") {
+        return None;
+    }
+    let (start, insert, finish) = match def.class_name.as_str() {
+        "weapon_nova" => (12.0 / 30.0, 14.0 / 30.0, 25.0 / 30.0),
+        "weapon_xm1014" => (21.0 / 30.0, 13.0 / 20.0, 13.0 / 30.0),
+        "weapon_sawedoff" => (12.0 / 30.0, 15.0 / 30.0, 26.0 / 30.0),
+        _ => (0.4, 0.5, 0.8),
+    };
+    Some(ShellReload { start, insert, finish })
+}
+
 /// Seconds after switching before the weapon can fire.
 pub fn deploy_time(def: &WeaponDefinition) -> f32 {
     match def.class {
         WeaponClass::Knife => 0.5,
         WeaponClass::Pistol => 0.8,
         _ => 1.0,
+    }
+}
+
+/// The bomb's class name.
+pub const C4: &str = "weapon_c4";
+
+/// CS:GO inventory slot: 1 primary, 2 pistol, 3 knife/zeus, 4 grenades,
+/// 5 bomb.
+pub fn slot(def: &WeaponDefinition) -> u8 {
+    match def.class {
+        WeaponClass::Pistol => 2,
+        WeaponClass::Knife => 3,
+        WeaponClass::Grenade => 4,
+        WeaponClass::Equipment if def.class_name == C4 => 5,
+        WeaponClass::Equipment => 3,
+        _ => 1,
     }
 }
 
@@ -158,21 +308,24 @@ pub struct AccuracyContext {
 /// Total inaccuracy (milliradians) for the next shot.
 pub fn inaccuracy(w: &WeaponState, ctx: AccuracyContext) -> f32 {
     let a = &w.def.accuracy;
-    let base = if ctx.ducked { a.inaccuracy_crouch } else { a.inaccuracy_stand };
-    let max_speed = w.def.max_player_speed.max(1.0);
+    let base = if ctx.ducked { w.alt_stat("inaccuracy crouch", a.inaccuracy_crouch) } else { w.alt_stat("inaccuracy stand", a.inaccuracy_stand) };
+    let max_speed = w.max_speed().max(1.0);
     let lo = max_speed * 0.34;
     let hi = max_speed * 0.95;
     let move_frac = ((ctx.speed - lo) / (hi - lo)).clamp(0.0, 1.0);
-    let air = if ctx.on_ground { 0.0 } else { a.inaccuracy_jump };
-    base + a.inaccuracy_move * move_frac + air + w.accuracy_penalty
+    let air = if ctx.on_ground { 0.0 } else { w.alt_stat("inaccuracy jump", a.inaccuracy_jump) };
+    base + w.alt_stat("inaccuracy move", a.inaccuracy_move) * move_frac + air + w.accuracy_penalty
 }
 
 /// Advances timers that run every tick whether or not the player fires.
 pub fn think(w: &mut WeaponState, time: f32, dt: f32, ducked: bool, firing: bool) {
+    if time >= w.next_attack && w.reload_end.is_none() {
+        if let Some(level) = w.resume_zoom.take() { w.set_zoom(level, time); }
+    }
     let recovery = if ducked {
-        w.def.accuracy.recovery_time_crouch
+        w.alt_stat("recovery time crouch", w.def.accuracy.recovery_time_crouch)
     } else {
-        w.def.accuracy.recovery_time_stand
+        w.alt_stat("recovery time stand", w.def.accuracy.recovery_time_stand)
     }
     .max(0.05);
     // Decays to 10 % over the recovery time.
@@ -181,7 +334,22 @@ pub fn think(w: &mut WeaponState, time: f32, dt: f32, ducked: bool, firing: bool
         w.recoil_index = (w.recoil_index - RECOIL_RECOVERY_RATE * dt).max(0.0);
     }
     if let Some(end) = w.reload_end {
-        if time >= end {
+        if let Some(s) = shell_reload(&w.def) {
+            // One shell each time an insert completes (all of them by the end).
+            let due = if time >= end {
+                i32::MAX
+            } else {
+                (((time - w.reload_start - s.start) / s.insert.max(0.01)).floor() as i32).max(0)
+            };
+            while w.shells_loaded < due && w.clip < w.def.clip_size && w.reserve > 0 {
+                w.clip += 1;
+                w.reserve -= 1;
+                w.shells_loaded += 1;
+            }
+            if time >= end || w.clip >= w.def.clip_size || w.reserve <= 0 {
+                w.reload_end = None;
+            }
+        } else if time >= end {
             let need = (w.def.clip_size - w.clip).max(0);
             let take = need.min(w.reserve);
             w.clip += take;
@@ -303,9 +471,59 @@ mod tests {
             view_model: String::new(),
             world_model: String::new(),
             fire_sound: String::new(),
+            zoom_in_sound: String::new(),
+            zoom_out_sound: String::new(),
             kill_award: 300,
             attributes: Default::default(),
         }
+    }
+
+    fn shotgun(name: &str, magazine: bool) -> WeaponDefinition {
+        let mut d = ak();
+        d.class_name = name.into();
+        d.class = WeaponClass::Shotgun;
+        d.clip_size = 8;
+        d.reserve_ammo = 32;
+        if magazine {
+            d.attributes.insert("magazine model".into(), "models/weapons/w_shot_mag7_mag.mdl".into());
+        }
+        d
+    }
+
+    fn run_reload(w: &mut WeaponState, from: f32, until: f32) {
+        let mut t = from;
+        while t < until {
+            think(w, t, crate::TICK_DT, false, false);
+            t += crate::TICK_DT;
+        }
+    }
+
+    #[test]
+    fn shotguns_load_shell_by_shell() {
+        let mut w = WeaponState::new(Arc::new(shotgun("weapon_nova", false)));
+        let s = w.shell_reload().expect("the Nova loads shells");
+        w.clip = 0;
+        w.begin_reload(0.0);
+        // Eight missing shells: the start plus eight inserts.
+        let end = w.reload_end.unwrap();
+        assert!((end - (s.start + 8.0 * s.insert)).abs() < 1e-4);
+        assert_eq!(w.shell_stage(0.1).unwrap().0, None);
+        assert_eq!(w.shell_stage(s.start + 2.5 * s.insert).unwrap().0, Some(2));
+        // Shells arrive one per insert.
+        run_reload(&mut w, 0.0, s.start + 2.5 * s.insert);
+        assert_eq!(w.clip, 2);
+        assert_eq!(w.reserve, 30);
+        run_reload(&mut w, s.start + 2.5 * s.insert, end + 0.1);
+        assert_eq!(w.clip, 8);
+        assert_eq!(w.reserve, 24);
+        assert!(w.reload_end.is_none());
+        // Only as many inserts as the reserve allows.
+        w.clip = 0;
+        w.reserve = 3;
+        w.begin_reload(10.0);
+        assert!((w.reload_end.unwrap() - 10.0 - (s.start + 3.0 * s.insert)).abs() < 1e-4);
+        // The MAG-7 has a magazine.
+        assert!(WeaponState::new(Arc::new(shotgun("weapon_mag7", true))).shell_reload().is_none());
     }
 
     #[test]

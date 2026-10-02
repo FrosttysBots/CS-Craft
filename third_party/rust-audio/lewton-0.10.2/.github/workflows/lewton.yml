@@ -1,0 +1,37 @@
+name: lewton
+
+on: [push, pull_request]
+
+jobs:
+  build:
+
+    strategy:
+      matrix:
+        os: [macOS-latest, ubuntu-latest, windows-latest]
+        toolchain: [stable, 1.45.0, 1.36.0]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@master
+    - name: Install Rust
+      if: matrix.os != 'macOS-latest' || matrix.toolchain != '1.36.0'
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: ${{ matrix.toolchain }}
+        override: true
+    - name: Run no-default-features builds
+      if: matrix.os != 'macOS-latest' || matrix.toolchain != '1.36.0'
+      run: |
+        cargo test --verbose --no-default-features
+        cargo doc --verbose --no-default-features
+    - name: Run all-features builds
+      if: matrix.os != 'macOS-latest' || matrix.toolchain != '1.36.0'
+      run: |
+        cargo test --verbose --all-features
+        cargo doc --verbose --all-features
+    - name: Run cmp tests
+      if: matrix.toolchain == '1.45.0'
+      run: |
+        cd dev/cmp
+        cargo test --verbose --release

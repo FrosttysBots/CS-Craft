@@ -124,6 +124,11 @@ impl Reader<'_> {
 }
 
 impl NavMesh {
+    /// Build runtime navigation (e.g. a voxel world whose floor can change).
+    pub fn from_areas(areas: Vec<Area>) -> Self {
+        let index=areas.iter().enumerate().map(|(i,a)|(a.id,i)).collect();
+        Self{version:16,places:vec!["Overworld".into()],areas,index}
+    }
     pub fn parse(bytes: &[u8]) -> io::Result<NavMesh> {
         let mut r = Reader { d: bytes, p: 0 };
         if r.u32()? != MAGIC {
@@ -261,6 +266,11 @@ impl NavMesh {
 
     /// A* over area centres. Returns area ids from `from` to `to` inclusive.
     pub fn find_path(&self, from: u32, to: u32) -> Option<Vec<u32>> {
+        self.find_path_with_cost(from,to,|_|0.0)
+    }
+
+    /// Additional nonnegative tactical traversal cost (fire, exposed approaches).
+    pub fn find_path_with_cost(&self, from: u32, to: u32, extra: impl Fn(&Area)->f32) -> Option<Vec<u32>> {
         #[derive(PartialEq)]
         struct Node(f32, u32);
         impl Eq for Node {}
@@ -304,7 +314,8 @@ impl NavMesh {
                     if b.flags & attr::CROUCH != 0 {
                         step *= 1.5;
                     }
-                    let ng = g + step;
+                    let penalty=extra(b);
+                    let ng = g + step + if penalty.is_finite() {penalty.max(0.0)}else{0.0};
                     if cost.get(&next).is_none_or(|&c| ng < c) {
                         cost.insert(next, ng);
                         came.insert(next, id);

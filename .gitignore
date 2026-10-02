@@ -1,3 +1,21 @@
 /target
 /csr-artifacts
 *.log
+
+/config/user.cfg
+/config/user.tmp
+
+/config/inventory.cfg
+/config/inventory.tmp
+
+/config/cosmetics.cfg
+/config/cosmetics.tmp
+/config/cosmetics.lock
+
+/worlds/
+
+# Release packaging output and player data
+/dist/
+/userdata/
+/config/paths.cfg
+/logs/

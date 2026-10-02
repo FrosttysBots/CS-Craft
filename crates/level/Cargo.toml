@@ -14,3 +14,5 @@ mdl.workspace = true
 collision.workspace = true
 weapons.workspace = true
 nav.workspace = true
+
+overworld.workspace = true

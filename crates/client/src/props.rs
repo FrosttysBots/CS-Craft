@@ -120,6 +120,8 @@ struct Batch {
     normals: Vec<[f32; 3]>,
     uvs: Vec<[f32; 2]>,
     colors: Vec<[f32; 4]>,
+    light_ids: Vec<[f32; 2]>,
+    tangents: Vec<[f32; 4]>,
     indices: Vec<u32>,
 }
 
@@ -130,7 +132,9 @@ impl Batch {
         m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals);
         m.insert_attribute(Mesh::ATTRIBUTE_UV_0, self.uvs);
         m.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.colors);
+        m.insert_attribute(Mesh::ATTRIBUTE_UV_1, self.light_ids);
         m.insert_indices(Indices::U32(self.indices));
+        m.insert_attribute(Mesh::ATTRIBUTE_TANGENT, self.tangents);
         m
     }
 }
@@ -198,19 +202,51 @@ pub fn spawn(
             Some((model, flips))
         });
     }
+    // Calculate tangents once per unique model mesh, then rotate per instance.
+    // Doing MikkTSpace on all six million placed vertices stalls map loading.
+    let mut tangent_cache = HashMap::new();
+    for (&id, loaded) in &models {
+        let Some((model, flips)) = loaded else { continue; };
+        for (index, (mesh, flip)) in model.meshes.iter().zip(flips).enumerate() {
+            if let Some(tangents) = mesh.vertices.iter().map(|v| v.tangent).collect::<Option<Vec<_>>>() {
+                tangent_cache.insert((id, index), tangents);
+                continue;
+            }
+            let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::MAIN_WORLD);
+            m.insert_attribute(Mesh::ATTRIBUTE_POSITION, mesh.vertices.iter().map(|v| v.position.to_array()).collect::<Vec<_>>());
+            m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, mesh.vertices.iter().map(|v| v.normal.to_array()).collect::<Vec<_>>());
+            m.insert_attribute(Mesh::ATTRIBUTE_UV_0, mesh.vertices.iter().map(|v| v.uv.to_array()).collect::<Vec<_>>());
+            let mut indices = mesh.indices.clone();
+            if *flip { for tri in indices.chunks_exact_mut(3) { tri.swap(1,2); } }
+            m.insert_indices(Indices::U32(indices));
+            if m.generate_tangents().is_ok() {
+                if let Some(bevy::mesh::VertexAttributeValues::Float32x4(t)) = m.attribute(Mesh::ATTRIBUTE_TANGENT) {
+                    tangent_cache.insert((id, index), t.clone());
+                }
+            }
+        }
+    }
     stats.failed_models = models.values().filter(|m| m.is_none()).count();
 
     // One material per resolved VMT, shared by every prop that uses it.
     let mut material_cache: HashMap<String, Handle<WorldMaterial>> = HashMap::new();
-    let mut batches: HashMap<(AssetId<WorldMaterial>, bool), (Handle<WorldMaterial>, Batch)> = HashMap::new();
+    let mut batches: HashMap<(AssetId<WorldMaterial>, bool, [i32; 3]), (Handle<WorldMaterial>, Batch)> = HashMap::new();
 
-    for prop in &bsp.static_props.props {
+    let mut light_data = vec![0u8; bsp.static_props.props.len().max(1) * 8 * 8];
+    for (prop_index, prop) in bsp.static_props.props.iter().enumerate() {
         let Some(Some((model, flips))) = models.get(&prop.model) else { continue };
         let rot = mdl::angles_to_mat3(prop.angles);
         let scale = if prop.scale > 0.0 { prop.scale } else { 1.0 };
         let center = prop.origin + rot * ((model.hull_min + model.hull_max) * 0.5 * scale);
         let radius = (model.hull_max - model.hull_min).length() * 0.5 * scale;
         let light = prop_light(bsp, collision, sun, center, prop.origin, radius);
+        let cube = [0, 1, 4, 5, 3, 2].map(|i| light.cube[i].extend(1.0));
+        for (i, v) in cube.into_iter().chain([to_bevy(light.to_sun).extend(1.0), light.sun.extend(1.0)]).enumerate() {
+            for (c, value) in v.to_array().into_iter().enumerate() {
+                let offset = (prop_index * 8 + i) * 8 + c * 2;
+                light_data[offset..offset + 2].copy_from_slice(&crate::textures::f32_to_f16(value).to_le_bytes());
+            }
+        }
 
         let in_sky = sky.filter(|s| bsp.point_area(prop.origin + glam::Vec3::Z * 4.0) == s.area);
         let mut transform = Transform {
@@ -223,7 +259,7 @@ pub fn spawn(
         }
         let affine = transform.compute_affine();
 
-        for (mesh, &flip) in model.meshes.iter().zip(flips) {
+        for (mesh_index, (mesh, &flip)) in model.meshes.iter().zip(flips).enumerate() {
             let tex = model.skin_texture(prop.skin.max(0) as usize, mesh.material);
             let candidates = model.material_candidates(tex);
             let key = candidates.first().cloned().unwrap_or_default();
@@ -236,15 +272,19 @@ pub fn spawn(
                 })
                 .clone();
             let (_, batch) = batches
-                .entry((material.id(), in_sky.is_some()))
+                .entry((material.id(), in_sky.is_some(), crate::world_mesh::spatial_cell(prop.origin)))
                 .or_insert_with(|| (material.clone(), Batch::default()));
             let base = batch.positions.len() as u32;
-            for v in &mesh.vertices {
+            for (vertex_index, v) in mesh.vertices.iter().enumerate() {
                 let n_source = (rot * v.normal).normalize_or_zero();
+                let tangent = tangent_cache.get(&(prop.model, mesh_index)).and_then(|t| t.get(vertex_index)).copied().unwrap_or([1.0,0.0,0.0,1.0]);
+                let t = to_bevy(rot * glam::Vec3::new(tangent[0], tangent[1], tangent[2]));
+                batch.tangents.push([t.x,t.y,t.z,tangent[3]]);
                 let lit = light.eval(n_source);
                 batch.positions.push(affine.transform_point3(to_bevy(v.position)).to_array());
                 batch.normals.push(to_bevy(n_source).to_array());
                 batch.uvs.push(v.uv.to_array());
+                batch.light_ids.push([prop_index as f32, 0.0]);
                 batch.colors.push([lit.x, lit.y, lit.z, 1.0]);
             }
             for tri in mesh.indices.chunks_exact(3) {
@@ -259,19 +299,29 @@ pub fn spawn(
         stats.instances += 1;
     }
 
-    for ((_, in_sky), (material, batch)) in batches {
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+    let lighting = images.add(Image::new(
+        Extent3d { width: 8, height: bsp.static_props.props.len().max(1) as u32, depth_or_array_layers: 1 },
+        TextureDimension::D2, light_data, TextureFormat::Rgba16Float, RenderAssetUsages::RENDER_WORLD,
+    ));
+    for handle in material_cache.values() {
+        if let Some(mut mat) = materials.get_mut(handle) { mat.prop_light = lighting.clone(); }
+    }
+    for ((_, in_sky, _), (material, batch)) in batches {
         if batch.indices.is_empty() {
             continue;
         }
+        let mesh = batch.into_mesh();
+        let clusters = crate::visibility::MapClusters::mesh(bsp, &mesh);
         let mut e = commands.spawn((
-            Mesh3d(meshes.add(batch.into_mesh())),
+            Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(material),
             Transform::IDENTITY,
         ));
         if in_sky {
             e.insert(crate::sky::sky_layer());
             stats.sky_draws += 1;
-        }
+        } else { e.insert(clusters); }
         stats.draws += 1;
     }
     stats

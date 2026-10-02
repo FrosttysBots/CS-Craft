@@ -28,10 +28,18 @@ pub mod buttons {
 
 /// Anything movement can trace against.
 pub trait TraceWorld {
+    fn voxel_scale(&self)->f32 {0.}
+    fn climbable(&self,_origin:Vec3,_mins:Vec3,_maxs:Vec3)->collision::Climbable {collision::Climbable::None}
+    fn trace_player(&self,start:Vec3,end:Vec3,mins:Vec3,maxs:Vec3,mask:i32,_drop_scaffold:bool)->Trace {self.trace_hull(start,end,mins,maxs,mask)}
     fn trace_hull(&self, start: Vec3, end: Vec3, mins: Vec3, maxs: Vec3, mask: i32) -> Trace;
 }
 
 impl TraceWorld for collision::CollisionWorld {
+    fn voxel_scale(&self)->f32 {self.dynamic.as_ref().map_or(0.,|d|d.voxel_scale())}
+    fn climbable(&self,origin:Vec3,mins:Vec3,maxs:Vec3)->collision::Climbable {self.dynamic.as_ref().map_or(collision::Climbable::None,|d|d.climbable(origin,mins,maxs))}
+    fn trace_player(&self,start:Vec3,end:Vec3,mins:Vec3,maxs:Vec3,mask:i32,drop_scaffold:bool)->Trace {
+        if let Some(d)=self.dynamic.as_ref().filter(|d|d.voxel_scale()>0.) {d.trace_player(start,end,mins,maxs,mask,drop_scaffold)} else {self.trace_box(start,end,mins,maxs,mask)}
+    }
     fn trace_hull(&self, start: Vec3, end: Vec3, mins: Vec3, maxs: Vec3, mask: i32) -> Trace {
         self.trace_box(start, end, mins, maxs, mask)
     }
@@ -209,12 +217,13 @@ struct Mover<'a, W: TraceWorld + ?Sized> {
     world: &'a W,
     dt: f32,
     max_speed: f32,
+    drop_scaffold: bool,
 }
 
 impl<W: TraceWorld + ?Sized> Mover<'_, W> {
     fn trace(&self, start: Vec3, end: Vec3) -> Trace {
         let (mins, maxs) = self.pm.hull();
-        self.world.trace_hull(start, end, mins, maxs, MASK)
+        self.world.trace_player(start, end, mins, maxs, MASK,self.drop_scaffold)
     }
 
     fn start_gravity(&mut self) {
@@ -450,6 +459,9 @@ impl<W: TraceWorld + ?Sized> Mover<'_, W> {
             return;
         }
 
+        if self.world.voxel_scale()>0. && input.buttons & (buttons::DUCK|buttons::WALK)!=0 {
+            self.guard_edge();
+        }
         let dest = self.pm.origin + self.pm.velocity * self.dt;
         let tr = self.trace(self.pm.origin, dest);
         if tr.fraction == 1.0 {
@@ -461,6 +473,38 @@ impl<W: TraceWorld + ?Sized> Mover<'_, W> {
         self.stay_on_ground();
     }
 
+    fn guard_edge(&mut self) {
+        let scale=self.world.voxel_scale();
+        let step=scale*0.05;
+        let supports=|x:f32,y:f32| {
+            let p=self.pm.origin+Vec3::new(x,y,0.);
+            let hit=self.trace(p,p-Vec3::Z*scale*0.6);
+            hit.fraction<1. && hit.normal.z>=0.7
+        };
+        let reduce=|v:f32| if v.abs()<=step {0.} else {v-v.signum()*step};
+        let mut x=self.pm.velocity.x*self.dt;let mut y=self.pm.velocity.y*self.dt;
+        while x!=0. && !supports(x,0.) {x=reduce(x);}
+        while y!=0. && !supports(0.,y) {y=reduce(y);}
+        while x!=0. && y!=0. && !supports(x,y) {x=reduce(x);y=reduce(y);}
+        self.pm.velocity.x=x/self.dt;self.pm.velocity.y=y/self.dt;
+    }
+    fn climb_move(&mut self,input:&MoveInput,kind:collision::Climbable) {
+        let scale=self.world.voxel_scale();
+        self.pm.on_ground=false;
+        self.pm.velocity*=0.75;
+        let (dir,speed)=self.wish(input);
+        self.accelerate(dir,speed.min(scale*3.),self.cfg.accelerate,input);
+        self.pm.velocity.x=self.pm.velocity.x.clamp(-scale*3.,scale*3.);
+        self.pm.velocity.y=self.pm.velocity.y.clamp(-scale*3.,scale*3.);
+        let horizontal=self.trace(self.pm.origin,self.pm.origin+Vec3::new(self.pm.velocity.x,self.pm.velocity.y,0.)*self.dt);
+        let sneak=input.buttons&(buttons::DUCK|buttons::WALK)!=0;
+        self.pm.velocity.z=if kind==collision::Climbable::Scaffolding && sneak {-scale*3.}
+            else if sneak {0.}
+            else if input.buttons&buttons::JUMP!=0 || (kind==collision::Climbable::Ladder && horizontal.fraction<1. && horizontal.normal.z.abs()<0.5) {scale*4.}
+            else {self.pm.velocity.z.max(-scale*3.)-self.cfg.gravity*self.dt};
+        self.pm.velocity.z=self.pm.velocity.z.max(-scale*3.);
+        self.try_player_move();
+    }
     fn air_move(&mut self, input: &MoveInput) {
         let (wish_dir, wish_speed) = self.wish(input);
         self.air_accelerate(wish_dir, wish_speed, self.cfg.air_accelerate);
@@ -587,10 +631,21 @@ pub fn player_move<W: TraceWorld + ?Sized>(
         world,
         dt,
         max_speed,
+        drop_scaffold:input.buttons&(buttons::DUCK|buttons::WALK)!=0,
     };
 
     m.pm.stamina = (m.pm.stamina - cfg.stamina_recovery_rate * dt).max(0.0);
     m.duck(input);
+    let (mins,maxs)=m.pm.hull();
+    let climb=world.climbable(m.pm.origin,mins,maxs);
+    if climb!=collision::Climbable::None {
+        m.climb_move(input,climb);
+        m.categorize(&mut events);
+        m.pm.old_buttons=input.buttons;
+        // Catching a ladder arrests the fall, not a hard landing.
+        events.landed=None;
+        return events;
+    }
     m.start_gravity();
     if input.buttons & buttons::JUMP != 0 {
         m.check_jump(input, &mut events);
