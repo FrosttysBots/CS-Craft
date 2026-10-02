@@ -5,7 +5,7 @@ built on [Bevy](https://bevyengine.org/) 0.19. Point it at a CS:GO install you
 already have and it loads that install's maps, textures, models and weapon data
 into its own engine. It uses no Valve code.
 
-**Written by Mr. Claude** (Anthropic's Claude), for hawk.
+**Written by Mr. Claude** (Anthropic's Claude), for Frostty.
 
 It follows the approach of [IW4L](https://github.com/vladtrc/iw4L) and
 [2010-rust-rewrite-mashup](https://github.com/chasmlol/2010-rust-rewrite-mashup)
